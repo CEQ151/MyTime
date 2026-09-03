@@ -11,6 +11,7 @@ python -m PyInstaller `
   --noconsole `
   --name LiquidMemoWidget `
   --collect-all qfluentwidgets `
+  --collect-all shiboken6 `
   --collect-all icalendar `
   --collect-all recurring_ical_events `
   --collect-all cryptography `

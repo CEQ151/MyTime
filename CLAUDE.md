@@ -145,12 +145,19 @@ The widget handles Win32 messages directly (no Qt-driven move):
   controls (checkboxes, buttons), and `HTTRANSPARENT` everywhere else so clicks pass through to
   the desktop. This click-through is the `alwaysVisibleClickThrough` layer mode (the only
   supported `layerMode` — `state_store.py` force-normalizes any other value).
+- `showEvent` strips `WS_EX_LAYERED` (`window_layer.clear_layered`): Qt adds the flag for
+  WA_TranslucentBackground, but layered windows hit-test per-pixel, so transparent pixels (the
+  whole empty surface of the frost/image skins) pass the mouse through to the desktop before our
+  NCHITTEST handler runs — that was why drag-resize "only worked in ink" (the GL surface paints
+  every pixel opaque). Without the flag DWM composition keeps the translucency and hit-testing
+  is rect-based. Re-strip on every show: Qt may re-add the flag on style changes.
 - Bottom-corner resize hot zones (`MemoWindow._resize_zone`) return `HTBOTTOMLEFT` /
   `HTBOTTOMRIGHT` / `HTBOTTOM` / `HTLEFT` / `HTRIGHT` so Windows runs the native size loop —
   the window uses a min/max size range (not `setFixed*`) to allow this. When `WM_EXITSIZEMOVE`
   ends with a changed size, `_finish_user_resize` pins `window.userSized` + the size;
   `_resize_for_content` then respects the manual size in collapsed mode only (expanded mode and
-  the 展开全部/收起 toggle always return to auto-fit).
+  the 展开全部/收起 toggle always return to auto-fit) and applies the size in every branch —
+  including startup, so a saved manual size survives restarts.
 - `WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE` bracket a native move (`_begin_window_move`/`_end_window_move`,
   which just track state, persist position, and re-protect the content layer — the frost / image
   follows the window natively, so there's nothing to spin up).

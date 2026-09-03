@@ -72,6 +72,7 @@ from window_layer import (
     WM_NCHITTEST,
     apply_tool_window,
     begin_system_move,
+    clear_layered,
     detach_from_parent,
     set_capture_exclusion,
     set_rounded_corners,
@@ -1232,6 +1233,13 @@ class MemoWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # Qt adds WS_EX_LAYERED for WA_TranslucentBackground, but a layered window hit-tests
+        # per-pixel: fully transparent pixels (most of the surface in the frost/image skins)
+        # pass the mouse through the window entirely, which killed the drag-resize hot zones
+        # outside the ink skin (its GL surface paints every pixel opaque). Strip the flag so
+        # hit-testing is rect-based and our NCHITTEST handler governs the whole surface; DWM
+        # composition keeps the translucency.
+        clear_layered(int(self.winId()))
         # Only spin the swirl when it is the active surface — with another skin selected the
         # ink widget stays allocated but hidden.
         if self._ink_bg is not None and self._active_skin_kind == "ink":
@@ -2001,7 +2009,9 @@ class MemoWindow(QWidget):
             width = auto_width
             height = min(wanted, int(screen.height() * MAX_HEIGHT_RATIO), screen_cap)
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        if not manual and (width, height) != (self.width(), self.height()):
+        # Apply in every branch: the manual size also has to be enforced at startup (the window
+        # is built at its constructor size long before the saved geometry is consulted).
+        if (width, height) != (self.width(), self.height()):
             self.resize(width, height)
 
         # Inset the content. Both skins fill the window (geometry_scale = 1.0 → vertical/horizontal

@@ -24,6 +24,13 @@ WS_EX_APPWINDOW = 0x00040000
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_LAYERED = 0x00080000
 
+LWA_COLORKEY = 0x00000001
+LWA_ALPHA = 0x00000002
+
+SetLayeredWindowAttributes = user32.SetLayeredWindowAttributes
+SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+SetLayeredWindowAttributes.restype = wintypes.BOOL
+
 HWND_TOP = 0
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
@@ -107,21 +114,20 @@ def apply_tool_window(hwnd: int) -> None:
     SetWindowLongW(hwnd, GWL_EXSTYLE, ctypes.c_long(styles & 0xFFFFFFFF).value)
 
 
-def clear_layered(hwnd: int) -> bool:
-    """Strip WS_EX_LAYERED from a translucent top-level window.
+def set_hit_testable_layered(hwnd: int) -> bool:
+    """Switch a translucent WS_EX_LAYERED window from per-pixel to whole-rect hit-testing.
 
-    Qt sets the flag for WA_TranslucentBackground, but a layered window hit-tests per-pixel:
-    fully transparent pixels (everywhere the skin paints nothing — most of the memo surface)
-    pass the mouse straight through, so WM_NCHITTEST never runs there and the drag-resize hot
-    zones / click-through logic stay dead. Without the flag the DWM composition keeps the
-    translucency while hit-testing stays rect-based and our NCHITTEST handler governs every
-    point. Returns True when the flag was present and got cleared."""
-    styles = GetWindowLongW(hwnd, GWL_EXSTYLE)
-    if not styles & WS_EX_LAYERED:
-        return False
-    styles &= ~WS_EX_LAYERED
-    SetWindowLongW(hwnd, GWL_EXSTYLE, ctypes.c_long(styles & 0xFFFFFFFF).value)
-    return True
+    Qt's WA_TranslucentBackground windows carry the flag without any layered attributes set
+    (UpdateLayeredWindow per-pixel mode): fully transparent pixels — most of the memo surface in
+    the frost/image skins — then pass the mouse straight to the desktop BEFORE WM_NCHITTEST ever
+    runs, which killed the drag-resize hot zones everywhere outside the ink skin (its GL surface
+    paints every pixel opaque). Setting LWA_ALPHA=255 flips the layered window into attribute
+    mode: hit-testing becomes the full rect, our NCHITTEST handler governs every point, and
+    alpha 255 leaves the DWM-composited translucency visually untouched. Returns True when the
+    attribute was applied."""
+    return bool(
+        user32.SetLayeredWindowAttributes(wintypes.HWND(hwnd), 0, 255, LWA_ALPHA)
+    )
 
 
 def set_topmost(hwnd: int, enabled: bool = True) -> None:

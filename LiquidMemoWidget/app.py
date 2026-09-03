@@ -72,9 +72,9 @@ from window_layer import (
     WM_NCHITTEST,
     apply_tool_window,
     begin_system_move,
-    clear_layered,
     detach_from_parent,
     set_capture_exclusion,
+    set_hit_testable_layered,
     set_rounded_corners,
     set_topmost,
     protect_window_from_capture,
@@ -1233,13 +1233,12 @@ class MemoWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Qt adds WS_EX_LAYERED for WA_TranslucentBackground, but a layered window hit-tests
-        # per-pixel: fully transparent pixels (most of the surface in the frost/image skins)
-        # pass the mouse through the window entirely, which killed the drag-resize hot zones
-        # outside the ink skin (its GL surface paints every pixel opaque). Strip the flag so
-        # hit-testing is rect-based and our NCHITTEST handler governs the whole surface; DWM
-        # composition keeps the translucency.
-        clear_layered(int(self.winId()))
+        # Qt's WA_TranslucentBackground windows carry WS_EX_LAYERED in per-pixel mode, where
+        # fully transparent pixels (the whole empty surface of the frost/image skins) pass the
+        # mouse to the desktop before our NCHITTEST handler runs — that was why drag-resize
+        # "only worked in ink" (the GL surface paints every pixel opaque). LWA_ALPHA=255 flips
+        # hit-testing to the full rect without touching the DWM-composited translucency.
+        set_hit_testable_layered(int(self.winId()))
         # Only spin the swirl when it is the active surface — with another skin selected the
         # ink widget stays allocated but hidden.
         if self._ink_bg is not None and self._active_skin_kind == "ink":

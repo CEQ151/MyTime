@@ -145,12 +145,13 @@ The widget handles Win32 messages directly (no Qt-driven move):
   controls (checkboxes, buttons), and `HTTRANSPARENT` everywhere else so clicks pass through to
   the desktop. This click-through is the `alwaysVisibleClickThrough` layer mode (the only
   supported `layerMode` — `state_store.py` force-normalizes any other value).
-- `showEvent` strips `WS_EX_LAYERED` (`window_layer.clear_layered`): Qt adds the flag for
-  WA_TranslucentBackground, but layered windows hit-test per-pixel, so transparent pixels (the
-  whole empty surface of the frost/image skins) pass the mouse through to the desktop before our
-  NCHITTEST handler runs — that was why drag-resize "only worked in ink" (the GL surface paints
-  every pixel opaque). Without the flag DWM composition keeps the translucency and hit-testing
-  is rect-based. Re-strip on every show: Qt may re-add the flag on style changes.
+- `showEvent` calls `window_layer.set_hit_testable_layered`: Qt's WA_TranslucentBackground
+  windows carry WS_EX_LAYERED in per-pixel (UpdateLayeredWindow) mode, where fully transparent
+  pixels (the whole empty surface of the frost/image skins) pass the mouse to the desktop before
+  our NCHITTEST handler runs — drag-resize "only worked in ink" because the GL surface paints
+  every pixel opaque. `SetLayeredWindowAttributes(LWA_ALPHA, 255)` flips hit-testing to the full
+  rect without touching the DWM-composited translucency. (Stripping the LAYERED flag instead
+  breaks Qt's translucent composition — the window renders black.)
 - Bottom-corner resize hot zones (`MemoWindow._resize_zone`) return `HTBOTTOMLEFT` /
   `HTBOTTOMRIGHT` / `HTBOTTOM` / `HTLEFT` / `HTRIGHT` so Windows runs the native size loop —
   the window uses a min/max size range (not `setFixed*`) to allow this. When `WM_EXITSIZEMOVE`

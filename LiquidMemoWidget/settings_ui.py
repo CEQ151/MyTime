@@ -24,7 +24,6 @@ from qfluentwidgets import (
     BodyLabel,
     CardWidget,
     CheckBox,
-    ColorDialog,
     ComboBox,
     FluentIcon,
     HyperlinkButton,
@@ -47,6 +46,7 @@ from ui_common import (
     FluentSettingRow,
     FramelessDragMixin,
     InfoToolTipFilter,
+    LargeColorDialog,
     SETTING_CONTROL_FONT_PX,
     SETTING_NAV_FONT_PX,
     SETTING_ROW_TITLE_FONT_PX,
@@ -614,7 +614,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
 
     def _pick_color(self, control: QWidget, swatch: QFrame, button: PushButton, title: str) -> None:
         current = str(control.property("selectedColor") or "#F8FBFF")
-        dialog = ColorDialog(QColor(current), title, self)
+        dialog = LargeColorDialog(QColor(current), title, self)
         if dialog.exec() == QDialog.Accepted:
             self._color_selected(control, swatch, button, dialog.color.name(), save_now=True)
 

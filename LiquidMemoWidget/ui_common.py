@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsDropShadowEffect, QHBoxLayo
 from qfluentwidgets import (
     BodyLabel,
     CardWidget,
+    ColorDialog,
     FluentIcon,
     ToolTipFilter,
     ToolTipPosition,
@@ -172,6 +173,94 @@ def set_label_font(label: QWidget, px: int, weight: QFont.Weight = QFont.Normal,
     extra = f" color: {color};" if color else ""
     qss = f"{name} {{ font: {bold}{px}px 'Times New Roman','Microsoft YaHei','Segoe UI Emoji';{extra} }}"
     setCustomStyleSheet(label, qss, qss)
+
+
+class LargeColorDialog(ColorDialog):
+    """qfluentwidgets 的 ColorDialog 是一块 488x696 的固定画布：子控件用绝对坐标摆放、
+    字号 14px 烧死在库的 QSS 里，只放大字体必然溢出。此子类按应用的字号体系整体放大
+    控件尺寸并重新排版。"""
+
+    def __init__(self, color, title: str, parent=None, enableAlpha: bool = False):
+        super().__init__(color, title, parent, enableAlpha)
+        self._relayout_large()
+
+    def _relayout_large(self) -> None:
+        family = "'Times New Roman','Microsoft YaHei','Segoe UI Emoji'"
+        # 窗口级样式表优先于库的应用级 QSS（后者把 titleLabel 定为 19px、按钮/输入框 14px）
+        self.setStyleSheet(
+            f"""
+            #titleLabel {{ font: 30px {family}; }}
+            QLabel {{ font: 24px {family}; }}
+            #prefixLabel {{ font: 20px {family}; }}
+            LineEdit {{ font: 22px {family}; }}
+            PrimaryPushButton {{ font: 24px {family}; }}
+            QPushButton {{ font: 24px {family}; }}
+            """
+        )
+        widget = self.widget
+        # The mask dialog's layout stretches self.widget, and the stock dialog relies on its
+        # maximum size (488x696) to keep the canvas centered — raise the cap to the new size
+        # rather than removing it, or the dialog fills the whole window.
+        widget.setMaximumSize(600, 936)
+        widget.resize(600, 872)
+        self.scrollWidget.resize(560, 716)
+        self.scrollArea.setViewportMargins(48, 32, 0, 32)
+
+        # setFont keeps fontMetrics in sync so the adjustSize() calls below measure with the
+        # new sizes; the stylesheet above governs the painted result.
+        for label, px in ((self.titleLabel, 30), (self.editLabel, 24)):
+            label.setFont(mixed_font_px(px))
+            label.adjustSize()
+        for label in (self.redLabel, self.greenLabel, self.blueLabel, self.opacityLabel):
+            label.setFont(mixed_font_px(24))
+        self.huePanel.setFixedSize(330, 330)
+        self.huePanel.move(0, 56)
+        self.newColorCard.setFixedSize(64, 164)
+        self.newColorCard.move(376, 56)
+        self.oldColorCard.setFixedSize(64, 164)
+        self.oldColorCard.move(376, self.newColorCard.geometry().bottom() + 2)
+        self.brightSlider.setFixedSize(330, 28)
+        self.brightSlider.move(0, 408)
+
+        self.editLabel.adjustSize()
+        self.editLabel.move(0, 462)
+        self.hexLineEdit.setFixedSize(230, 46)
+        self.hexLineEdit.move(280, 458)
+        self.hexLineEdit.setTextMargins(4, 0, 42, 0)
+        if getattr(self.hexLineEdit, "prefixLabel", None) is not None:
+            self.hexLineEdit.prefixLabel.adjustSize()
+            self.hexLineEdit.prefixLabel.move(8, 10)
+
+        for index, (edit, label) in enumerate(
+            (
+                (self.redLineEdit, self.redLabel),
+                (self.greenLineEdit, self.greenLabel),
+                (self.blueLineEdit, self.blueLabel),
+            )
+        ):
+            edit.setFixedSize(190, 46)
+            edit.move(0, 518 + index * 56)
+            label.adjustSize()
+            label.move(210, 518 + index * 56 + 10)
+
+        bottom = self.blueLineEdit.geometry().bottom()
+        if self.enableAlpha:
+            self.opacityLineEdit.setFixedSize(190, 46)
+            self.opacityLineEdit.move(0, bottom + 12)
+            self.opacityLabel.adjustSize()
+            self.opacityLabel.move(210, bottom + 22)
+            if getattr(self.opacityLineEdit, "suffixLabel", None) is not None:
+                self.opacityLineEdit.suffixLabel.move(
+                    self.opacityLineEdit.fontMetrics().boundingRect(self.opacityLineEdit.text()).width() + 18, 10
+                )
+            self.scrollWidget.resize(560, 780)
+            widget.resize(600, 936)
+
+        self.buttonGroup.setFixedSize(598, 96)
+        self.yesButton.setFixedSize(266, 48)
+        self.yesButton.move(26, 24)
+        self.cancelButton.setFixedSize(266, 48)
+        self.cancelButton.move(306, 24)
 class InfoToolTipFilter(ToolTipFilter):
     """ToolTipFilter whose bubble text is larger than the 12px qfluentwidgets default."""
 

@@ -79,3 +79,27 @@ def test_app_windows_build(qapp):
     app_mod.HistoryWindow(app)
     editor = app_mod.TodoEditorPopup(None)
     assert editor.height() == 132
+
+
+def test_large_color_dialog_resized(qapp):
+    """The stock qfluentwidgets ColorDialog is a 488x696 absolute-position canvas with 14px
+    fonts — the app must present the enlarged re-laid-out subclass instead."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QWidget
+
+    from ui_common import LargeColorDialog
+
+    parent = QWidget()
+    parent.resize(1600, 900)
+    dialog = LargeColorDialog(QColor("#C3FFFE"), "窗口颜色", parent)
+    assert dialog.widget.width() >= 580
+    assert dialog.widget.height() >= 850
+    assert dialog.hexLineEdit.height() >= 44
+    assert dialog.huePanel.width() >= 320
+    assert dialog.yesButton.height() >= 44
+    assert dialog.titleLabel.font().pixelSize() == 30
+    # children must stay inside the scroll canvas
+    assert dialog.blueLineEdit.geometry().bottom() <= dialog.scrollWidget.height()
+    # alpha variant stays consistent too
+    alpha_dialog = LargeColorDialog(QColor("#80C3FFFE"), "窗口颜色", parent, enableAlpha=True)
+    assert alpha_dialog.opacityLineEdit.geometry().bottom() <= alpha_dialog.scrollWidget.height()

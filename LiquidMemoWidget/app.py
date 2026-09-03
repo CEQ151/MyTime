@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QMenu,
     QScrollArea,
     QSizePolicy,
     QSystemTrayIcon,
@@ -46,8 +45,10 @@ from qfluentwidgets import (
     BodyLabel,
     CardWidget,
     FluentIcon,
+    MenuAnimationType,
     PrimaryPushButton,
     PushButton,
+    RoundMenu,
     SmoothScrollArea,
     TitleLabel,
     ToolTipPosition,
@@ -92,6 +93,7 @@ from ui_common import (
     css_rgba,
     enlarge_control_font,
     mixed_font,
+    mixed_font_px,
     qcolor,
     relative_luminance,
     scaled_dialog_size,
@@ -2206,7 +2208,7 @@ class LiquidMemoApp:
         self.updater = UpdateManager(self)
         self.floating = FloatingModeController(self)
         self.ink.bind_ui()
-        self.tray_menu: QMenu | None = None
+        self.tray_menu: RoundMenu | None = None
         self.tray = QSystemTrayIcon(tray_icon())
         self.tray.setToolTip("桌面备忘")
         self.tray.activated.connect(self._tray_activated)
@@ -2276,50 +2278,21 @@ class LiquidMemoApp:
 
     def show_tray_menu(self) -> None:
         pos = QCursor.pos()
-        menu = QMenu("桌面备忘", self.window)
-        # Translucent + frameless so the rounded corners render cleanly instead of being
-        # clipped by the menu's square native window.
-        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
-        menu.setAttribute(Qt.WA_TranslucentBackground)
-        menu.setMinimumWidth(264)
+        # qfluentwidgets' RoundMenu gives the Fluent look (rounded translucent card, hover
+        # animation, proper icon/text metrics) instead of a hand-styled QMenu. No parent: it is
+        # a top-level popup, and a deleted parent would take its view down with it.
+        menu = RoundMenu()
+        menu.setItemHeight(46)
+        # Delegate text comes from the view's font; match the app's serif/CJK stack.
+        menu.view.setFont(mixed_font_px(18))
+        menu.view.setMinimumWidth(240)
+        menu.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         ink = getattr(self, "ink", None)
         theme = ink.theme if getattr(ink, "active", False) else None
-        menu_bg = theme.popup_bg if theme else "rgb(251,252,254)"
-        menu_selected = css_rgba(qcolor(theme.accent), 42 / 255) if theme else "rgba(0,103,192,30)"
-        menu_selected_text = theme.text if theme else "rgb(0,71,138)"
-        menu.setStyleSheet(
-            f"""
-            QMenu {{
-                {FONT_STACK_QSS}
-                background-color: {menu_bg};
-                color: rgb(24, 32, 40);
-                border: 1px solid rgba(17,24,32,26);
-                border-radius: 15px;
-                padding: 8px;
-                font-size: 17px;
-            }}
-            QMenu::item {{
-                min-width: 224px;
-                min-height: 44px;
-                padding: 9px 26px 9px 18px;
-                margin: 2px 4px;
-                border-radius: 10px;
-                background-color: transparent;
-            }}
-            QMenu::item:selected {{
-                background-color: {menu_selected};
-                color: {menu_selected_text};
-            }}
-            QMenu::icon {{
-                padding-left: 12px;
-            }}
-            QMenu::separator {{
-                height: 1px;
-                margin: 6px 14px;
-                background: rgba(17,24,32,20);
-            }}
-            """
-        )
+        if theme:
+            menu.view.setStyleSheet(
+                f"MenuActionListWidget {{ background-color: {theme.popup_bg}; border-radius: 8px; }}"
+            )
         self._add_tray_action(menu, FluentIcon.SETTING, "设置", self.show_settings)
         self._add_tray_action(menu, FluentIcon.HISTORY, "历史记录", self.show_history)
         menu.addSeparator()
@@ -2335,17 +2308,17 @@ class LiquidMemoApp:
         # from the cursor pushed it off the bottom edge / too low. Instead anchor the menu's
         # bottom-right corner near the cursor so it opens up-and-to-the-left, and clamp it to
         # the screen work area so it is never clipped.
-        menu.ensurePolished()
-        size = menu.sizeHint()
+        menu.adjustSize()
+        size = menu.view.size()
         screen = self.qt.screenAt(pos) or self.qt.primaryScreen()
         area = screen.availableGeometry()
         x = pos.x() - size.width() - 6
         y = pos.y() - size.height()
         x = max(area.left() + 4, min(x, area.right() - size.width() - 4))
         y = max(area.top() + 4, min(y, area.bottom() - size.height() - 4))
-        menu.exec(QPoint(x, y))
+        menu.exec(QPoint(x, y), aniType=MenuAnimationType.FADE_IN_DROP_DOWN)
 
-    def _add_tray_action(self, menu: QMenu, icon: FluentIcon, text: str, callback) -> None:
+    def _add_tray_action(self, menu: "RoundMenu", icon: FluentIcon, text: str, callback) -> None:
         action = Action(icon, text, menu)
         action.triggered.connect(callback)
         menu.addAction(action)

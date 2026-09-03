@@ -6,7 +6,6 @@ when/where the memo is shown.
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime
 from typing import TYPE_CHECKING, Iterable
 
@@ -185,8 +184,7 @@ class FloatingLauncherWindow(QWidget):
         self.setToolTip("点击展开桌面备忘；拖动可调整位置；右键打开菜单")
 
         self._alert_status = "none"
-        self._surprise_mode = False
-        self._surprise_burst = 0.0
+        self._ink_bubble: tuple[str, str, str] | None = None
         self._idle = 0.0
         self._shine = 0.0
         self._hover = 0.0
@@ -222,22 +220,11 @@ class FloatingLauncherWindow(QWidget):
         self._press_animation.setDuration(80)
         self._press_animation.setEasingCurve(QEasingCurve.OutCubic)
         self._press_animation.valueChanged.connect(self._set_pressed)
-        self._burst_animation = QVariantAnimation(self)
-        self._burst_animation.setDuration(1200)
-        self._burst_animation.setStartValue(0.0)
-        self._burst_animation.setKeyValueAt(0.35, 1.0)
-        self._burst_animation.setEndValue(0.0)
-        self._burst_animation.valueChanged.connect(self._set_burst)
 
-    def set_surprise_mode(self, enabled: bool) -> None:
-        self._surprise_mode = bool(enabled)
+    def set_ink_mode(self, enabled: bool, bubble: "tuple[str, str, str] | None" = None) -> None:
+        """Tint the launcher bubble to the active 水墨主题 (or None for the default blue look)."""
+        self._ink_bubble = bubble if enabled else None
         self.update()
-
-    def play_surprise_burst(self) -> None:
-        if not self._surprise_mode:
-            return
-        self._burst_animation.stop()
-        self._burst_animation.start()
 
     def set_alert_status(self, status: str) -> None:
         status = status if status in {"none", "near", "overdue"} else "none"
@@ -337,10 +324,10 @@ class FloatingLauncherWindow(QWidget):
         body_path = QPainterPath()
         body_path.addRoundedRect(body_rect, 19, 19)
         body_gradient = QLinearGradient(body_rect.topLeft(), body_rect.bottomRight())
-        if self._surprise_mode:
-            body_gradient.setColorAt(0.0, QColor("#FFB7D5"))
-            body_gradient.setColorAt(0.48, QColor("#FF78B2"))
-            body_gradient.setColorAt(1.0, QColor("#C68CFF"))
+        if self._ink_bubble is not None:
+            body_gradient.setColorAt(0.0, QColor(self._ink_bubble[0]))
+            body_gradient.setColorAt(0.48, QColor(self._ink_bubble[1]))
+            body_gradient.setColorAt(1.0, QColor(self._ink_bubble[2]))
         else:
             body_gradient.setColorAt(0.0, QColor("#79E4FF"))
             body_gradient.setColorAt(0.48, QColor("#64B8FF"))
@@ -399,33 +386,6 @@ class FloatingLauncherWindow(QWidget):
             painter.drawRect(QRectF(shine_x - 14, -55, 28, 110))
             painter.restore()
 
-        painter.resetTransform()
-        if self._surprise_mode:
-            painter.setPen(Qt.NoPen)
-            for index in range(9):
-                angle = (index / 9.0 + self._idle * 0.14) * math.tau
-                radius = 30 + self._surprise_burst * 8
-                x = 36 + math.cos(angle) * radius
-                y = 36 + math.sin(angle) * radius
-                alpha = 105 + round(self._surprise_burst * 100)
-                painter.setBrush(QColor(255, 88 + index * 8, 158 + index * 5, min(240, alpha)))
-                if index % 3:
-                    heart = QPainterPath(QPointF(x, y + 2.4))
-                    heart.cubicTo(x - 6, y - 1.5, x - 3.8, y - 5.5, x, y - 2.4)
-                    heart.cubicTo(x + 3.8, y - 5.5, x + 6, y - 1.5, x, y + 2.4)
-                    painter.drawPath(heart)
-                else:
-                    star = QPainterPath()
-                    for point_index in range(8):
-                        star_angle = -math.pi / 2 + point_index * math.pi / 4
-                        star_radius = 3.7 if point_index % 2 == 0 else 1.3
-                        point = QPointF(
-                            x + math.cos(star_angle) * star_radius,
-                            y + math.sin(star_angle) * star_radius,
-                        )
-                        star.moveTo(point) if point_index == 0 else star.lineTo(point)
-                    star.closeSubpath()
-                    painter.drawPath(star)
         if self._alert_status != "none":
             color = QColor("#FF3B30" if self._alert_status == "overdue" else "#FF9500")
             painter.setPen(QPen(QColor(255, 255, 255, 235), 2.2))
@@ -454,10 +414,6 @@ class FloatingLauncherWindow(QWidget):
 
     def _set_pressed(self, value) -> None:
         self._pressed = float(value)
-        self.update()
-
-    def _set_burst(self, value) -> None:
-        self._surprise_burst = float(value)
         self.update()
 
 
@@ -708,7 +664,6 @@ class FloatingModeController(QObject):
             self.window._is_window_moving
             or self.window._reorder_row is not None
             or self.window.add_popup.isVisible()
-            or bool(getattr(self.app, "surprise", None) and self.app.surprise.note_dialog.isVisible())
             or self.app.settings_window.isVisible()
             or self.app.history_window.isVisible()
         )

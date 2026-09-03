@@ -2,16 +2,16 @@
 
 # 🪟 Liquid Memo Widget
 
-**A translucent frosted-glass desktop memo & todo widget for Windows 11**
+**A translucent desktop memo & todo widget for Windows 11**
 
-A translucent DWM acrylic frost (or a custom static image background) floating todos, deadlines,
-and calendar events on the desktop.
+A frosted-glass, animated ink-wash, or custom image surface floating todos, deadlines, calendar
+events, and reminders on the desktop.
 
 [中文](README.md) · English
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6?logo=windows11&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
-![Render](https://img.shields.io/badge/render-DWM%20Acrylic%20%2B%20Qt-5C2D91)
+![Render](https://img.shields.io/badge/render-DWM%20Acrylic%20%2B%20InkWash%20%2B%20Qt-5C2D91)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -23,13 +23,13 @@ and calendar events on the desktop.
 ### 🎨 Visuals
 - **Frosted-glass skin (default)** — a translucent surface built on Windows' own DWM acrylic
   effect: light on resources, crisp text, no GPU screen capture.
+- **Ink-wash skin** — an animated ink-wash fluid background that follows your cursor, with three
+  ink themes (azure / warm sepia / blush rose) that also tint the app chrome. Pick it under
+  Settings → 外观 (Appearance).
 - **Image background skin** — upload and crop an image to use as a static background skin,
   switchable any time in settings.
 - **Tunable tint** — adjust the frost's low-saturation background tint and customize the normal /
   urgent todo text colors.
-
-> Earlier versions also offered a real-time "liquid glass" D3D11 skin that captured and refracted
-> the desktop behind the window. It was removed (buggy and heavy on size).
 
 ### ✅ Todos
 - **Todo-focused surface** — quickly add and check off items; completed items archive or stay
@@ -46,8 +46,16 @@ and calendar events on the desktop.
 - **Offline cache** — the last sync is persisted so events remain visible after a restart with
   no network; checked-off events stay remembered across re-syncs (dimmed + strikethrough).
 
+### ⏰ Reminders
+- **Deadline reminders** — a native Windows notification pops when a todo deadline or calendar
+  event approaches; the lead time is configurable (all-day events remind at 9:00 that morning).
+- **Near-due highlighting** — within N days before a deadline/event start (configurable, default
+  1) the time cell turns amber; overdue stays red.
+
 ### 🖱️ Desktop Interaction
 - **Three display modes**: regular floating memo, sliding edge auto-hide, or an animated floating launcher that opens on click and retracts after the pointer leaves.
+- **Drag to resize** — grab the bottom-left or bottom-right corner to resize the window freely;
+  the manual size is remembered, and 展开全部 / 收起 (expand/collapse) returns to auto-fit.
 - **Click-through** — clicks over the translucent surface pass through to the desktop; only
   checkboxes and buttons capture input, so the widget never gets in your way.
 - **Native movement and sizing** — move via `⋮⋮`, resize collapsed mode from the bottom edge,
@@ -130,9 +138,9 @@ Writes are atomic (temp file + replace); a corrupt file is backed up as
 
 ## 🙏 Acknowledgements
 
-The earlier real-time liquid glass skin adapted the D3D11 rendering core from
-[ai12989757/WindowsLiquidGlass](https://github.com/ai12989757/WindowsLiquidGlass) (MIT licensed).
-That skin and its engine have since been removed, and the third-party code is no longer
-distributed with the project.
+The ink-wash background's fluid algorithm is adapted from
+[PavelDoGreat/WebGL-Fluid-Simulation](https://github.com/PavelDoGreat/WebGL-Fluid-Simulation)
+(MIT licensed) and Jos Stam's *Stable Fluids* (SIGGRAPH 1999), reimplemented as fresh GLSL
+shaders for OpenGL 3.3 Core / PySide6.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.

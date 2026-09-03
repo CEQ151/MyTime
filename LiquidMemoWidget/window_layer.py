@@ -39,6 +39,12 @@ WM_EXITSIZEMOVE = 0x0232
 HTCLIENT = 1
 HTCAPTION = 2
 HTTRANSPARENT = -1
+# Edge/corner hit codes for the native drag-resize (WM_NCHITTEST → DefWindowProc size loop).
+HTLEFT = 10
+HTRIGHT = 11
+HTBOTTOM = 15
+HTBOTTOMLEFT = 16
+HTBOTTOMRIGHT = 17
 
 ReleaseCapture = user32.ReleaseCapture
 ReleaseCapture.argtypes = []
@@ -74,10 +80,10 @@ def set_window_exclude_from_capture(hwnd: int, exclude: bool = True) -> bool:
     return bool(SetWindowDisplayAffinity(wintypes.HWND(hwnd), affinity))
 
 
-# Process-wide policy for whether the app's windows opt out of screen capture. The launcher and the
-# surprise note dialog are decoupled (no app reference), so they read this shared policy in their
-# showEvent via protect_window_from_capture() instead of each carrying the setting. The app sets it
-# from Settings.allowScreenshot at startup and whenever the toggle changes. Default True preserves
+# Process-wide policy for whether the app's windows opt out of screen capture. The launcher is
+# decoupled (no app reference at paint time), so it reads this shared policy in its showEvent via
+# protect_window_from_capture() instead of carrying the setting. The app sets it from
+# Settings.allowScreenshot at startup and whenever the toggle changes. Default True preserves
 # the historical "never captured" behavior until the loaded setting overrides it.
 _exclude_from_capture = True
 

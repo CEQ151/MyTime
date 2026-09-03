@@ -132,6 +132,9 @@ class WindowState:
     y: int | None = None
     width: int = 320
     height: int = 320
+    # True after the user drag-resized the window via a corner/edge hot zone; the auto
+    # content-fit sizing is then skipped (collapsed mode) until 展开全部/收起 toggles it back.
+    userSized: bool = False
     # Independent position of the floating-launcher bubble. None uses the default position on
     # the primary screen; stale/off-screen values are clamped when the launcher is shown.
     launcherX: int | None = None
@@ -189,8 +192,8 @@ class CustomSkin:
 class Settings:
     # Rendering skin. "acrylic" is a lightweight DWM frosted-glass surface (no GPU screen
     # capture) and is the default; "image:<id>" selects a user-created CustomSkin (a static image
-    # background, see customSkins). Any unrecognized value normalizes to "acrylic" in from_dict.
-    # (The old real-time D3D "glass" skin was removed.)
+    # background, see customSkins); "ink" selects the animated 灵动水墨 surface. Any unrecognized
+    # value normalizes to "acrylic" in from_dict. (The old real-time D3D "glass" skin was removed.)
     skin: str = "acrylic"
     # User-created image-background skins, each selectable as "image:<id>". The built-in
     # acrylic skin is not in this list and cannot be deleted.
@@ -240,14 +243,9 @@ class Settings:
     autoCheckUpdates: bool = True
     lastUpdateCheckAt: str = ""
     lastDismissedUpdateVersion: str = ""
-    surpriseEnabled: bool = False
-    surpriseKeyBlob: str = ""
-    preSurpriseWindowMode: str = ""
-    preSurpriseSkin: str = ""
-    surpriseCompletedDate: str = ""
-    surpriseNoteDate: str = ""
-    surpriseNoteIndex: int = -1
-    surpriseNoteTheme: str = "qinghua"
+    # Palette for the 灵动水墨 (ink-wash) skin (settings → 外观 → 水墨主题). Also tints the
+    # settings/tray/launcher chrome while the ink skin is active. Validated in from_dict.
+    inkTheme: str = "qinghua"
 
     def active_calendar_feeds(self) -> list[CalendarFeed]:
         """Feeds that are checked and have a URL — the only ones synced and displayed."""
@@ -325,11 +323,12 @@ class AppState:
         settings.customSkins = [CustomSkin.from_dict(item) for item in settings_data.get("customSkins") or []]
         # The "glass" (real-time D3D liquid-glass) skin was removed; it is intentionally absent
         # from valid_skins so any saved "glass" selection normalizes back to the frost skin below.
-        # "surprise_swirl" is a valid stored value so an active surprise session survives a restart,
-        # but it only ever *renders* / appears in the picker while surprise mode is active (gated in
-        # MemoWindow._make_skin and SettingsWindow._refresh_skin_combo, both keyed on the decrypted
-        # payload) — so it cannot leak to a normal user even by hand-editing this file.
-        valid_skins = {"acrylic", "surprise_swirl"} | {f"image:{s.id}" for s in settings.customSkins}
+        # "ink" (灵动水墨) is a normal, always-selectable skin. The pre-rename value
+        # "surprise_swirl" (the former unlock-gated easter egg) migrates to "ink" so upgraded
+        # users keep their chosen background.
+        if settings.skin == "surprise_swirl":
+            settings.skin = "ink"
+        valid_skins = {"acrylic", "ink"} | {f"image:{s.id}" for s in settings.customSkins}
         if settings.skin not in valid_skins:
             settings.skin = "acrylic"
         settings.calendarSyncDays = max(1, min(30, int(settings.calendarSyncDays or 7)))
@@ -338,16 +337,15 @@ class AppState:
         settings.autoCheckUpdates = bool(settings.autoCheckUpdates)
         settings.notifyMinutesBefore = max(1, min(1440, int(settings.notifyMinutesBefore or 15)))
         settings.nearHighlightDays = max(1, min(30, int(settings.nearHighlightDays or 1)))
-        settings.surpriseEnabled = bool(settings.surpriseEnabled)
-        try:
-            settings.surpriseNoteIndex = int(settings.surpriseNoteIndex)
-        except (TypeError, ValueError):
-            settings.surpriseNoteIndex = -1
-        if settings.surpriseNoteTheme not in {"qinghua", "warm", "blush"}:
-            settings.surpriseNoteTheme = "qinghua"
+        # Legacy states stored the palette under "surpriseNoteTheme"; carry the choice over.
+        if "inkTheme" not in settings_data:
+            settings.inkTheme = str(settings_data.get("surpriseNoteTheme") or "")
+        if settings.inkTheme not in {"qinghua", "warm", "blush"}:
+            settings.inkTheme = "qinghua"
         settings.calendarFeeds = [CalendarFeed.from_dict(item) for item in settings_data.get("calendarFeeds") or []]
         settings.calendarFeedArchive = [CalendarFeed.from_dict(item) for item in settings_data.get("calendarFeedArchive") or []]
         window = WindowState(**{key: window_data.get(key, value) for key, value in window_defaults.items()})
+        window.userSized = bool(window.userSized)
         todos = [TodoItem.from_dict(item) for item in data.get("todos") or []]
         history = [TodoItem.from_dict(item) for item in data.get("history") or []]
         events = [CalendarEvent.from_dict(item) for item in data.get("calendarEvents") or []]

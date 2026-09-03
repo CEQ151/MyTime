@@ -2,11 +2,10 @@
 Talks to the app only through the duck-typed `self.app` handle."""
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -53,10 +52,11 @@ from ui_common import (
     SETTING_ROW_TITLE_FONT_PX,
     SETTING_STATUS_FONT_PX,
     SETTING_TITLE_FONT_PX,
-    add_soft_shadow,
     enlarge_control_font,
+    mixed_font_px,
     scaled_dialog_size,
     set_label_font,
+    tray_icon,
 )
 from skin_editor import CropDialog, export_crop, image_open_filter, load_skin_pixmap
 from startup import is_startup_enabled, set_startup
@@ -67,15 +67,38 @@ if TYPE_CHECKING:
     from app import LiquidMemoApp
 
 
+class LargeMenuComboBox(ComboBox):
+    """ComboBox whose drop-down list follows the settings control font.
+
+    qfluentwidgets builds the popup menu lazily and its list view keeps the app-default
+    small font no matter what QSS the combo itself carries, so the closed control reads
+    large while the opened menu items stay tiny. _createComboMenu is the override point:
+    set the view font (the delegate paints item text with it) and scale the row height.
+    """
+
+    def _createComboMenu(self):
+        menu = super()._createComboMenu()
+        menu.setItemHeight(round(SETTING_CONTROL_FONT_PX * 1.55))
+        # The library's menu.qss hardcodes `MenuActionListWidget { font: 14px }`, which beats
+        # setFont; a same-selector widget-level rule is what actually overrides it.
+        font = f"{SETTING_CONTROL_FONT_PX}px 'Times New Roman','Microsoft YaHei','Segoe UI Emoji'"
+        menu.view.setStyleSheet(f"MenuActionListWidget {{ font: {font}; }}")
+        # QFont stays in sync for fontMetrics-based menu sizing (adjustSize measures text width).
+        menu.view.setFont(mixed_font_px(SETTING_CONTROL_FONT_PX))
+        return menu
+
+
 class SettingsWindow(FramelessDragMixin, QDialog):
     def __init__(self, app: "LiquidMemoApp") -> None:
-        super().__init__(None, Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # Deliberately NOT WindowStaysOnTopHint: settings should layer like any normal window.
+        super().__init__(None, Qt.Dialog | Qt.FramelessWindowHint)
         self.app = app
         self._last_startup_checked = is_startup_enabled()
-        self._version_taps: list[float] = []
         self.setWindowTitle("设置")
+        # Frameless top-level dialogs otherwise fall back to the pythonw.exe icon in the taskbar.
+        self.setWindowIcon(tray_icon())
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(scaled_dialog_size(1120, 860))
+        self.setFixedSize(scaled_dialog_size(1160, 900))
         self._build()
 
     def _build(self) -> None:
@@ -97,8 +120,9 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             }}
             """
         )
-        add_soft_shadow(self.frame, blur=40, y=14, alpha=90)
-
+        # No add_soft_shadow here: this frame fills the whole window, so its drop shadow is
+        # clipped away (invisible) while the effect still re-renders + re-blurs the entire
+        # subtree on every child repaint — the source of the hover jank reported on this window.
         layout = QVBoxLayout(self.frame)
         layout.setContentsMargins(38, 34, 38, 36)
         layout.setSpacing(24)
@@ -108,10 +132,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         titles.setSpacing(4)
         title = TitleLabel("设置")
         set_label_font(title, SETTING_TITLE_FONT_PX)
-        subtitle = BodyLabel("调整桌面备忘的玻璃、颜色、启动和窗口行为。")
-        subtitle.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,150); font-size: {SETTING_STATUS_FONT_PX}px;")
         titles.addWidget(title)
-        titles.addWidget(subtitle)
         header.addLayout(titles, 1)
         reset = PushButton("恢复默认外观", self.frame, FluentIcon.RETURN)
         reset.setToolTip("仅恢复「外观」分类的默认值，不影响行为与日历订阅设置")
@@ -171,12 +192,19 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         self._section("外观")
         self.skin = self._combo_row(
             "皮肤",
-            "磨砂玻璃省性能、文字易读，是默认皮肤；图片皮肤使用你上传的图片作为静态背景。",
-            {"磨砂玻璃（推荐）": "acrylic"},
+            "磨砂玻璃省性能、文字易读，是默认皮肤；灵动水墨是动态水墨背景；图片皮肤使用你上传的图片作为静态背景。",
+            {"磨砂玻璃（推荐）": "acrylic", "灵动水墨": "ink"},
             self.app.state.settings.skin,
         )
         self._refresh_skin_combo()  # append any saved image skins + select the active one
         self.skin.currentIndexChanged.connect(self._apply)
+        self.ink_theme = self._combo_row(
+            "水墨主题",
+            "灵动水墨背景与界面配色的主题，仅在选择了灵动水墨皮肤时生效。",
+            {"青花 · 蓝": "qinghua", "暖玉 · 暖": "warm", "黛粉 · 粉": "blush"},
+            self.app.state.settings.inkTheme,
+        )
+        self.ink_theme.currentIndexChanged.connect(self._apply)
         self._image_skins_card()
         self.window_color = self._color_row("窗口颜色", "控制磨砂玻璃的低饱和背景染色。", self.app.state.settings.windowTint)
         self.text_color = self._color_row("待办字体颜色", "选择后自动切到手动颜色，并立即应用到普通待办。", self.app.state.settings.todoTextColor, True)
@@ -245,7 +273,6 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         enlarge_control_font(github_link)
         self.form.addWidget(FluentSettingRow("项目主页", "查看源码、提交反馈或为项目点个 Star。", github_link))
         self._update_row()
-        self._surprise_status_row()
         self.auto_update = self._switch_row(
             "自动检查更新", "启动后在后台检查新版本（每 12 小时一次）；关闭后仅在点击「检查更新」时检查。",
             self.app.state.settings.autoCheckUpdates,
@@ -254,8 +281,8 @@ class SettingsWindow(FramelessDragMixin, QDialog):
 
         self.form.addStretch()
         self.nav.setCurrentRow(0)
-        surprise = getattr(self.app, "surprise", None)
-        self.apply_surprise_theme(bool(surprise and surprise.active))
+        ink = getattr(self.app, "ink", None)
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
 
     def _section(self, title: str) -> None:
         # Each section becomes a nav entry + its own scrollable page; the row helpers
@@ -312,7 +339,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         button.setText(color)
 
     def _combo_row(self, title: str, content: str, options: dict[str, str], current: str) -> ComboBox:
-        combo = ComboBox()
+        combo = LargeMenuComboBox()
         combo.setFixedWidth(360)
         enlarge_control_font(combo)
         for text, data in options.items():
@@ -404,7 +431,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         settings = self.app.state.settings
         if not settings.calendarFeeds:
             empty = BodyLabel("尚未添加日历订阅")
-            empty.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,120); font-size: {SETTING_STATUS_FONT_PX}px;")
+            set_label_font(empty, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,120)")
             self.feed_rows_layout.addWidget(empty)
         for feed in settings.calendarFeeds:
             row = QWidget()
@@ -516,7 +543,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         layout.setSpacing(10)
         self.calendar_status_label = BodyLabel("")
         self.calendar_status_label.setWordWrap(True)
-        self.calendar_status_label.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,150); font-size: {SETTING_STATUS_FONT_PX}px;")
+        set_label_font(self.calendar_status_label, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,150)")
         sync_button = PushButton("立即同步")
         sync_button.clicked.connect(self._sync_calendar_now)
         enlarge_control_font(sync_button)
@@ -533,7 +560,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         layout.setSpacing(10)
         self.update_status_label = BodyLabel(f"当前版本 v{APP_VERSION}")
         self.update_status_label.setWordWrap(True)
-        self.update_status_label.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,150); font-size: {SETTING_STATUS_FONT_PX}px;")
+        set_label_font(self.update_status_label, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,150)")
         self.update_status_label.installEventFilter(self)
         check_button = PushButton("检查更新", control, FluentIcon.SYNC)
         check_button.clicked.connect(lambda: self.app.updater.check(silent=False))
@@ -542,69 +569,19 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         layout.addWidget(check_button)
         self.form.addWidget(FluentSettingRow("检查更新", "从 GitHub Releases 获取新版本，自动下载并安装。", control))
 
-    def _surprise_status_row(self) -> None:
-        control = QWidget()
-        control.setFixedWidth(440)
-        layout = QHBoxLayout(control)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.surprise_status_label = BodyLabel("特别模式已激活")
-        set_label_font(self.surprise_status_label, SETTING_STATUS_FONT_PX)
-        restore = PushButton("恢复普通模式", control, FluentIcon.RETURN)
-        enlarge_control_font(restore)
-        restore.clicked.connect(lambda: getattr(self.app, "surprise", None) and self.app.surprise.deactivate())
-        layout.addWidget(self.surprise_status_label, 1)
-        layout.addWidget(restore)
-        self.surprise_row = FluentSettingRow("特别模式", "清除本机保存的专属密钥并恢复原主题。", control)
-        self.form.addWidget(self.surprise_row)
-        # Inline (not _combo_row) so we keep a handle on the row and can hide it outside 彩蛋模式.
-        self.note_theme_combo = ComboBox()
-        self.note_theme_combo.setFixedWidth(360)
-        enlarge_control_font(self.note_theme_combo)
-        for text, data in {"青花笺 · 蓝": "qinghua", "暖玉情书 · 暖": "warm", "黛粉笺 · 粉": "blush"}.items():
-            self.note_theme_combo.addItem(text, userData=data)
-        self.note_theme_combo.setCurrentIndex(
-            max(0, self.note_theme_combo.findData(self.app.state.settings.surpriseNoteTheme))
-        )
-        self.note_theme_combo.currentIndexChanged.connect(self._apply)
-        self.note_theme_row = FluentSettingRow("纸条主题", "拾光纸条的配色与气质。", self.note_theme_combo)
-        self.form.addWidget(self.note_theme_row)
-        self.sync_surprise_state()
-
-    def sync_surprise_state(self) -> None:
-        if hasattr(self, "surprise_row"):
-            surprise = getattr(self.app, "surprise", None)
-            visible = bool(surprise and surprise.active)
-            self.surprise_row.setVisible(visible)
-            if hasattr(self, "note_theme_row"):
-                self.note_theme_row.setVisible(visible)
-
-    def eventFilter(self, watched, event) -> bool:
-        if watched is getattr(self, "update_status_label", None) and event.type() == QEvent.MouseButtonPress:
-            surprise = getattr(self.app, "surprise", None)
-            if event.button() == Qt.LeftButton and surprise is not None and not surprise.active:
-                now = time.monotonic()
-                self._version_taps = [stamp for stamp in self._version_taps if now - stamp <= 5.0]
-                self._version_taps.append(now)
-                if len(self._version_taps) >= 7:
-                    self._version_taps.clear()
-                    surprise.show_activation_dialog(self)
-                return True
-        return super().eventFilter(watched, event)
-
-    def apply_surprise_theme(self, active: bool) -> None:
-        top = "#FFF8FB" if active else "rgb(252,253,255)"
-        bottom = "#FFE3EC" if active else "rgb(240,244,250)"
+    def apply_ink_theme(self, theme) -> None:
+        top = theme.panel_top if theme else "rgb(252,253,255)"
+        bottom = theme.panel_bottom if theme else "rgb(240,244,250)"
         self.frame.setStyleSheet(
             f"QFrame#fluentPanel {{ {FONT_STACK_QSS} background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 {top},stop:1 {bottom}); border: 1px solid rgba(255,255,255,210); border-radius: 22px; }}"
             " QFrame#colorSwatch { border: 1px solid rgba(17,24,32,38); border-radius: 9px; }"
         )
-        selected_bg = "rgba(232,93,147,42)" if active else "rgba(0,103,192,30)"
-        selected_text = "#7A2447" if active else "rgb(0,71,138)"
+        selected_bg = f"rgba({theme.accent_rgb},42)" if theme else "rgba(0,103,192,30)"
+        selected_text = theme.nav_text if theme else "rgb(0,71,138)"
         self.nav.setStyleSheet(
             self._nav_base_style
             + f" QListWidget::item:selected {{ background: {selected_bg}; color: {selected_text}; }}"
         )
-        self.sync_surprise_state()
 
     def set_update_status(self, text: str) -> None:
         if hasattr(self, "update_status_label"):
@@ -660,17 +637,14 @@ class SettingsWindow(FramelessDragMixin, QDialog):
 
     # ── Image skins (custom background pictures) ──────────────────────────────────────────
     def _refresh_skin_combo(self) -> None:
-        """Rebuild the skin picker: the built-in frost skin plus one entry per saved image skin.
-        The built-in is always present and never removable; image skins reflect customSkins. The
-        encrypted-only 灵动水墨 (swirl) entry appears *only* while surprise mode is active, so it
-        never shows to a normal user. Run with signals blocked so rebuilding never fires _apply."""
+        """Rebuild the skin picker: the two built-in skins plus one entry per saved image skin.
+        The built-ins are always present and never removable; image skins reflect customSkins.
+        Run with signals blocked so rebuilding never fires _apply."""
         combo = self.skin
         blocked = combo.blockSignals(True)
         combo.clear()
         combo.addItem("磨砂玻璃（推荐）", userData="acrylic")
-        surprise = getattr(self.app, "surprise", None)
-        if surprise is not None and surprise.active:
-            combo.addItem("灵动水墨", userData="surprise_swirl")
+        combo.addItem("灵动水墨", userData="ink")
         for skin in self.app.state.settings.customSkins:
             combo.addItem(skin.name or "未命名图片", userData=f"image:{skin.id}")
         index = combo.findData(self.app.state.settings.skin)
@@ -730,7 +704,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         skins = self.app.state.settings.customSkins
         if not skins:
             empty = BodyLabel("尚未添加图片皮肤")
-            empty.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,120); font-size: {SETTING_STATUS_FONT_PX}px;")
+            set_label_font(empty, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,120)")
             self.skin_rows_layout.addWidget(empty)
             return
         for skin in skins:
@@ -810,6 +784,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         settings = self.app.state.settings
         blockers = [
             self.skin.blockSignals(True),
+            self.ink_theme.blockSignals(True),
             self.font_mode.blockSignals(True),
             self.complete.blockSignals(True),
             self.position.blockSignals(True),
@@ -821,7 +796,6 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             self.calendar_enabled.blockSignals(True),
             self.calendar_days.blockSignals(True),
             self.auto_update.blockSignals(True),
-            self.note_theme_combo.blockSignals(True),
             self.allow_screenshot.blockSignals(True),
         ]
         self._refresh_skin_combo()  # rebuild entries (custom skins may have changed) + reselect
@@ -840,16 +814,15 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         self.calendar_enabled.setChecked(settings.calendarEnabled)
         self.calendar_days.setValue(settings.calendarSyncDays)
         self.auto_update.setChecked(settings.autoCheckUpdates)
-        self.note_theme_combo.setCurrentIndex(max(0, self.note_theme_combo.findData(settings.surpriseNoteTheme)))
+        self.ink_theme.setCurrentIndex(max(0, self.ink_theme.findData(settings.inkTheme)))
         self.allow_screenshot.setChecked(settings.allowScreenshot)
         self.refresh_feed_list()
         self.refresh_image_skin_list()
         self.refresh_calendar_status()
-        self.sync_surprise_state()
         for widget, blocked in zip(
-            [self.skin, self.font_mode, self.complete, self.position, self.startup,
+            [self.skin, self.ink_theme, self.font_mode, self.complete, self.position, self.startup,
              self.window_mode, self.notify_enabled, self.notify_minutes, self.near_highlight_days,
-             self.calendar_enabled, self.calendar_days, self.auto_update, self.note_theme_combo,
+             self.calendar_enabled, self.calendar_days, self.auto_update,
              self.allow_screenshot],
             blockers,
         ):
@@ -872,6 +845,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         defaults = Settings()
         settings = self.app.state.settings
         settings.skin = defaults.skin
+        settings.inkTheme = defaults.inkTheme
         settings.windowTint = defaults.windowTint
         settings.todoTextColor = defaults.todoTextColor
         settings.urgentTextColor = defaults.urgentTextColor
@@ -882,16 +856,18 @@ class SettingsWindow(FramelessDragMixin, QDialog):
     def _apply(self, *_args, save_now: bool = False) -> None:
         settings = self.app.state.settings
         window_mode_before = settings.windowMode
+        skin_before = settings.skin
+        ink_theme_before = settings.inkTheme
         settings.skin = str(self.skin.currentData())
+        skin_changed = skin_before != settings.skin
+        settings.inkTheme = str(self.ink_theme.currentData())
+        ink_theme_changed = ink_theme_before != settings.inkTheme
         settings.windowTint = self._control_color(self.window_color, settings.windowTint)
         settings.todoTextColor = self._control_color(self.text_color, settings.todoTextColor)
         settings.urgentTextColor = self._control_color(self.urgent_color, settings.urgentTextColor)
         settings.fontColorMode = str(self.font_mode.currentData())
         settings.completeBehavior = str(self.complete.currentData())
         settings.layerMode = "alwaysVisibleClickThrough"
-        # Surprise mode auto-switches to floatingLauncher on activation (and syncs this combo via
-        # sync_from_state), but the user may freely change the window mode afterwards — same model as
-        # the skin picker — so write the combo value unconditionally.
         settings.windowMode = str(self.window_mode.currentData())
         settings.notificationsEnabled = self.notify_enabled.isChecked()
         screenshot_before = settings.allowScreenshot
@@ -900,9 +876,6 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         settings.notifyMinutesBefore = int(self.notify_minutes.value())
         settings.nearHighlightDays = int(self.near_highlight_days.value())
         settings.autoCheckUpdates = self.auto_update.isChecked()
-        note_theme_before = settings.surpriseNoteTheme
-        settings.surpriseNoteTheme = str(self.note_theme_combo.currentData())
-        note_theme_changed = note_theme_before != settings.surpriseNoteTheme
         self.app.state.window.startPosition = str(self.position.currentData())
         if self.app.state.window.startPosition == "current":
             self.app.state.window.x = self.app.window.x()
@@ -925,10 +898,10 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         else:
             self.app.save_later()
         self.app.window.apply_settings()
-        # A pure note-theme change doesn't alter the skin, so apply_settings won't relayout; rebuild
-        # the in-memo 拾光 row directly so its colours follow the new theme immediately.
-        if note_theme_changed:
-            self.app.window.refresh()
+        # Entering/leaving the ink skin (or switching its theme) re-tints the chrome and
+        # recolours the background in place; other settings changes don't need the sweep.
+        if skin_changed or ink_theme_changed:
+            self.app.ink.apply_theme()
         if screenshot_changed:
             self.app.apply_capture_policy()
         if window_mode_before != settings.windowMode:

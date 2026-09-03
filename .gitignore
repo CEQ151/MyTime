@@ -18,14 +18,11 @@ venv/
 *.bak
 *.bad-*.json
 
-# Personalized surprise-mode source; commit only the generated encrypted payload.
-private/
-*.surprise.json
-
 # External reference only (algorithm port source); not needed at runtime, kept local.
 WebGL-Fluid-Simulation/
 
 # Dev-only scratch under the fluid sandbox (not part of the shipped ink-wash).
-LiquidMemoWidget/experimental_fluid/fenxi.txt
-LiquidMemoWidget/experimental_fluid/surprise_bg_spike.py
+LiquidMemoWidget/experimental_fluid/*.txt
+LiquidMemoWidget/experimental_fluid/*_spike.py
 
+.zcode/

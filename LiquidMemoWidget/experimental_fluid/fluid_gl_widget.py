@@ -152,7 +152,7 @@ class FluidGLWidget(QOpenGLWidget):
         self._prev_mouse_x = 0.0
         self._prev_mouse_y = 0.0
         self._mouse_moved = False
-        # When embedded behind a click-through window (surprise mode) the widget never
+        # When embedded behind a click-through window (the ink skin) the widget never
         # receives Qt mouse events, so ink is driven by polling the global cursor instead.
         self._track_global_cursor = False
         self._global_cursor_prev = None
@@ -472,7 +472,7 @@ class FluidGLWidget(QOpenGLWidget):
     def set_global_cursor_tracking(self, enabled: bool) -> None:
         """Drive ink from the global cursor (QCursor.pos) instead of Qt mouse events.
 
-        Needed when the widget sits behind a click-through window (surprise mode),
+        Needed when the widget sits behind a click-through window (the ink skin),
         where it never receives mouseMoveEvent.
         """
         self._track_global_cursor = enabled

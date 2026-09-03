@@ -29,4 +29,5 @@ python -m PyInstaller `
   --icon "$root\assets\logo.ico" `
   --add-data "$root\assets\logo.ico;assets" `
   --add-data "$root\LiquidMemoWidget;LiquidMemoWidget" `
+  --add-data "$root\CHANGELOG.md;." `
   (Join-Path $root "RunLiquidMemoWidget.pyw")

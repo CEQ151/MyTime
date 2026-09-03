@@ -15,7 +15,6 @@ from ui_common import (
     FONT_STACK_QSS,
     SETTING_ROW_TITLE_FONT_PX,
     SETTING_STATUS_FONT_PX,
-    add_soft_shadow,
     enlarge_control_font,
     relative_luminance,
     set_label_font,
@@ -230,8 +229,9 @@ class CropDialog(QDialog):
         self.frame = QFrame(self)
         self.frame.setObjectName("fluentPanel")
         self.frame.setGeometry(0, 0, width, height)
-        self.apply_surprise_theme(bool(QApplication.instance().property("surpriseMode")))
-        add_soft_shadow(self.frame, blur=34, y=12, alpha=80)
+        self.apply_ink_theme(QApplication.instance().property("inkMode"))
+        # No add_soft_shadow: full-bleed frame → shadow clipped (invisible) but still taxes
+        # every child repaint with a full re-render + blur (same jank as the settings window).
 
         body = QVBoxLayout(self.frame)
         body.setContentsMargins(30, 26, 30, 26)
@@ -240,7 +240,7 @@ class CropDialog(QDialog):
         title = TitleLabel("裁切背景图")
         set_label_font(title, SETTING_ROW_TITLE_FONT_PX + 3)
         subtitle = BodyLabel("拖动图片调整位置，滚动鼠标滚轮缩放；白色矩形内为最终背景区域。")
-        subtitle.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,150); font-size: {SETTING_STATUS_FONT_PX}px;")
+        set_label_font(subtitle, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,150)")
         body.addWidget(title)
         body.addWidget(subtitle)
 
@@ -290,10 +290,10 @@ class CropDialog(QDialog):
 
         self.skin_name = ""
 
-    def apply_surprise_theme(self, active: bool) -> None:
-        top = "rgb(255,248,251)" if active else "rgb(252,253,255)"
-        bottom = "rgb(255,227,236)" if active else "rgb(240,244,250)"
-        border = "rgba(255,198,218,230)" if active else "rgba(255,255,255,210)"
+    def apply_ink_theme(self, theme) -> None:
+        top = theme.panel_top if theme else "rgb(252,253,255)"
+        bottom = theme.panel_bottom if theme else "rgb(240,244,250)"
+        border = f"rgba({theme.accent_rgb},90)" if theme else "rgba(255,255,255,210)"
         self.frame.setStyleSheet(
             f"""
             QFrame#fluentPanel {{

@@ -5,6 +5,7 @@ or the D3D engine — so it stays green on machines without a GPU."""
 import types
 
 import pytest
+from PySide6.QtCore import Qt
 
 from state_store import AppState
 
@@ -26,6 +27,18 @@ def test_split_ui_modules_build_without_engine(qapp):
 
     sw = settings_ui.SettingsWindow(app)
     assert sw.nav.count() == 5  # 外观 / 行为 / 提醒 / 日历订阅 / 关于
+    assert not (sw.windowFlags() & Qt.WindowStaysOnTopHint)  # layers like a normal window
+    assert not sw.windowIcon().isNull()  # taskbar must not fall back to the pythonw icon
+    assert sw.frame.graphicsEffect() is None  # full-bleed shadow effect = repaint tax, no visual
+
+    # The combo drop-down must follow the settings control font instead of the library's
+    # app-default small font (menu item text is painted with the view's own font).
+    from ui_common import SETTING_CONTROL_FONT_PX
+
+    combo_menu = sw.skin._createComboMenu()
+    assert combo_menu.view.font().pixelSize() == SETTING_CONTROL_FONT_PX
+    assert combo_menu.view._itemHeight == round(SETTING_CONTROL_FONT_PX * 1.55)
+    combo_menu.deleteLater()
 
     release = updater.ReleaseInfo(
         tag="v9.9.9", version="9.9.9", notes="n", html_url="u",
@@ -35,6 +48,26 @@ def test_split_ui_modules_build_without_engine(qapp):
     update_ui.ChangelogDialog("notes")
     calendar_manager.CalendarManager(app)
     notify_manager.NotificationManager(app)
+
+
+def test_status_labels_survive_theme_colour_change(qapp):
+    """qfluentwidgets re-applies its base 14px qss on every setThemeColor/theme fire, which
+    wipes plain setStyleSheet font overrides — the 当前版本/上次同步 labels shrank back. The
+    setCustomStyleSheet path must survive a theme-colour change."""
+    from qfluentwidgets import setTheme, setThemeColor, Theme
+
+    import ui_common
+    import settings_ui
+
+    setTheme(Theme.LIGHT)
+    app = _stub_app()
+    sw = settings_ui.SettingsWindow(app)
+    assert sw.update_status_label.font().pixelSize() == ui_common.SETTING_STATUS_FONT_PX
+    assert sw.calendar_status_label.font().pixelSize() == ui_common.SETTING_STATUS_FONT_PX
+
+    setThemeColor("#3D7AB3")  # what the app does at startup and on every ink-theme switch
+    assert sw.update_status_label.font().pixelSize() == ui_common.SETTING_STATUS_FONT_PX
+    assert sw.calendar_status_label.font().pixelSize() == ui_common.SETTING_STATUS_FONT_PX
 
 
 def test_app_windows_build(qapp):

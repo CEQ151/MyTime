@@ -3,12 +3,13 @@ changelog, and the manager that runs the startup/manual checks. Network/install
 logic lives in updater.py; the app is reached through `self.app`."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QTextDocument
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QVBoxLayout
 from qfluentwidgets import (
     BodyLabel,
@@ -18,12 +19,12 @@ from qfluentwidgets import (
     PushButton,
     SmoothScrollArea,
     TitleLabel,
+    themeColor,
 )
 
 import updater
 from ui_common import (
     FONT_STACK_QSS,
-    add_soft_shadow,
     enlarge_control_font,
     scaled_dialog_size,
     set_label_font,
@@ -35,12 +36,14 @@ if TYPE_CHECKING:
 
 
 # Update dialogs are glanced at and matter (a release prompt / the post-update notes), so the
-# type is deliberately large and clearly readable — bigger than the settings rows.
+# type is deliberately large and clearly readable — bigger than the settings rows. Notes get
+# generous leading: a bulleted changelog at tight line-height reads cramped in CJK.
 UPDATE_TITLE_PX = 36
-UPDATE_SUBTITLE_PX = 24
-UPDATE_NOTES_PX = 23
-UPDATE_STATUS_PX = 21
-UPDATE_BUTTON_PX = 23
+UPDATE_SUBTITLE_PX = 26
+UPDATE_NOTES_PX = 28
+UPDATE_NOTES_LINE_HEIGHT = 175
+UPDATE_STATUS_PX = 24
+UPDATE_BUTTON_PX = 25
 
 
 class _ReleaseCardDialog(QDialog):
@@ -66,14 +69,15 @@ class _ReleaseCardDialog(QDialog):
             }}
             """
         )
-        add_soft_shadow(self.frame, blur=34, y=12, alpha=80)
+        # No add_soft_shadow: full-bleed frame → shadow clipped (invisible) but still taxes
+        # every child repaint with a full re-render + blur (same jank as the settings window).
         self.body = QVBoxLayout(self.frame)
         self.body.setContentsMargins(46, 40, 46, 40)
         self.body.setSpacing(24)
 
-    def apply_surprise_theme(self, active: bool) -> None:
-        top = "#FFF8FB" if active else "rgb(252,253,255)"
-        bottom = "#FFE3EC" if active else "rgb(240,244,250)"
+    def apply_ink_theme(self, theme) -> None:
+        top = theme.panel_top if theme else "rgb(252,253,255)"
+        bottom = theme.panel_bottom if theme else "rgb(240,244,250)"
         self.frame.setStyleSheet(
             f"QFrame#fluentPanel {{ {FONT_STACK_QSS} background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 {top},stop:1 {bottom}); border: 1px solid rgba(255,255,255,210); border-radius: 28px; }}"
         )
@@ -85,9 +89,7 @@ class _ReleaseCardDialog(QDialog):
         set_label_font(title_label, UPDATE_TITLE_PX)
         subtitle_label = BodyLabel(subtitle)
         subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(
-            f"{FONT_STACK_QSS} color: rgba(17,24,32,165); font-size: {UPDATE_SUBTITLE_PX}px;"
-        )
+        set_label_font(subtitle_label, UPDATE_SUBTITLE_PX, color="rgba(17,24,32,165)")
         titles.addWidget(title_label)
         titles.addWidget(subtitle_label)
         self.body.addLayout(titles)
@@ -106,9 +108,32 @@ class _ReleaseCardDialog(QDialog):
         )
         notes = QLabel()
         # Release notes come as markdown from the GitHub API, or as HTML when
-        # the rate-limited API fell back to the releases.atom feed.
-        notes.setTextFormat(Qt.RichText if html else Qt.MarkdownText)
-        notes.setText(text.strip() or ("暂无更新说明" if html else "_暂无更新说明_"))
+        # the rate-limited API fell back to the releases.atom feed. Markdown is rendered via a
+        # QTextDocument (full md fidelity: links, bold, code, headings) whose exported HTML gets
+        # our typography injected into the inline styles — QLabel's own stylesheet line-height
+        # never reaches the internal rich-text renderer.
+        if html:
+            notes.setTextFormat(Qt.RichText)
+            notes.setText(text.strip() or "暂无更新说明")
+        else:
+            doc = QTextDocument()
+            doc.setMarkdown(text.strip() or "_暂无更新说明_")
+            rich = doc.toHtml()
+            body_style = (
+                " font-family:'Times New Roman','Microsoft YaHei','Segoe UI Emoji';"
+                f" font-size:{UPDATE_NOTES_PX}px; font-weight:400; font-style:normal;"
+            )
+            rich = re.sub(r'<body style="[^"]*"', f'<body style="{body_style}"', rich)
+            # Prepending into each tag's existing style keeps the exporter's own attributes and
+            # adds ours (line-height exists only in ours, so it always wins).
+            leading = f" line-height: {UPDATE_NOTES_LINE_HEIGHT}%;"
+            for tag in ("li", "p"):
+                rich = rich.replace(f'<{tag} style="', f'<{tag} style="{leading} ')
+            heading = f" color: {themeColor().name()};"
+            for tag in ("h1", "h2", "h3", "h4"):
+                rich = rich.replace(f'<{tag} style="', f'<{tag} style="{heading} ')
+            notes.setTextFormat(Qt.RichText)
+            notes.setText(rich)
         notes.setWordWrap(True)
         notes.setOpenExternalLinks(True)
         notes.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -147,7 +172,8 @@ class UpdateDialog(_ReleaseCardDialog):
     def __init__(self, app: "LiquidMemoApp", release: updater.ReleaseInfo) -> None:
         super().__init__(680, 740)
         self.app = app
-        self.apply_surprise_theme(getattr(getattr(app, "surprise", None), "active", False))
+        ink = getattr(app, "ink", None)
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
         self.release = release
         self._downloading = False
         self._signals: _DownloadSignals | None = None
@@ -160,9 +186,7 @@ class UpdateDialog(_ReleaseCardDialog):
         self.progress.hide()
         self.body.addWidget(self.progress)
         self.status = BodyLabel("")
-        self.status.setStyleSheet(
-            f"{FONT_STACK_QSS} color: rgba(17,24,32,160); font-size: {UPDATE_STATUS_PX}px;"
-        )
+        set_label_font(self.status, UPDATE_STATUS_PX, color="rgba(17,24,32,160)")
         self.status.hide()
         self.body.addWidget(self.status)
 
@@ -244,7 +268,8 @@ class UpdateDialog(_ReleaseCardDialog):
 class ChangelogDialog(_ReleaseCardDialog):
     def __init__(self, notes: str, html: bool = False, app=None) -> None:
         super().__init__(660, 680)
-        self.apply_surprise_theme(getattr(getattr(app, "surprise", None), "active", False))
+        ink = getattr(app, "ink", None) if app is not None else None
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
         self.setWindowTitle("更新日志")
         self.add_header("更新完成 🎉", f"桌面备忘已更新到 v{APP_VERSION}，本次更新内容：")
         self.add_notes(notes, html)
@@ -298,21 +323,55 @@ class UpdateManager:
     def on_startup(self) -> None:
         settings = self.app.state.settings
         self._check_failed_update(settings)
+        if self._maybe_show_debug_dialog():
+            return
         if settings.lastRunVersion != APP_VERSION:
             was_update = bool(settings.lastRunVersion)
             settings.lastRunVersion = APP_VERSION
             self.app.save_later()
             if was_update:
-                # Show this version's release notes once after an update.
-                self._fetch(
-                    tag=f"v{APP_VERSION}",
-                    on_done=lambda release: self._show_changelog(release.notes, release.notes_html),
-                    on_fail=lambda _msg: self._show_changelog(
-                        f"更新说明获取失败，可前往 [GitHub 发布页]({GITHUB_URL}/releases) 查看。"
-                    ),
-                )
+                # Show this version's release notes once after an update. Prefer the changelog
+                # bundled inside the app — right after an update the network is the least
+                # trustworthy part of the flow; GitHub is only a fallback for dev checkouts.
+                local = updater.local_changelog_section()
+                if local:
+                    self._show_changelog(local)
+                else:
+                    self._fetch(
+                        tag=f"v{APP_VERSION}",
+                        on_done=lambda release: self._show_changelog(release.notes, release.notes_html),
+                        on_fail=lambda _msg: self._show_changelog(
+                            f"更新说明获取失败，可前往 [GitHub 发布页]({GITHUB_URL}/releases) 查看。"
+                        ),
+                    )
         if settings.autoCheckUpdates and self._silent_check_due(settings):
             QTimer.singleShot(8000, lambda: self.check(silent=True))
+
+    def _maybe_show_debug_dialog(self) -> bool:
+        """Show the 更新发现 dialog with fake data when a debug payload is provided, so the
+        update UI can be exercised without publishing a real release. Set
+        LIQUID_MEMO_DEBUG_RELEASE to a version tag (e.g. "v9.9.9"); the notes come from
+        LIQUID_MEMO_DEBUG_NOTES when set, otherwise a short placeholder list."""
+        import os
+
+        tag = os.environ.get("LIQUID_MEMO_DEBUG_RELEASE", "")
+        if not tag:
+            return False
+        notes = os.environ.get(
+            "LIQUID_MEMO_DEBUG_NOTES",
+            "- 调试占位更新说明一\n- 调试占位更新说明二",
+        )
+        release = updater.ReleaseInfo(
+            tag=tag if tag.startswith("v") else f"v{tag}",
+            version=tag.lstrip("v"),
+            notes=notes,
+            html_url=f"{GITHUB_URL}/releases",
+            installer_url="",
+            installer_name="",
+            installer_size=0,
+        )
+        QTimer.singleShot(1500, lambda: self._show_dialog(UpdateDialog(self.app, release)))
+        return True
 
     def _silent_check_due(self, settings) -> bool:
         stamp = settings.lastUpdateCheckAt

@@ -59,8 +59,13 @@ from skin_editor import load_skin_pixmap, mean_luminance as image_mean_luminance
 from state_store import CalendarEvent, Settings, StateStore, TodoItem, deadline_alert, parse_ddl, utc_now
 from wheel_hook import GlobalWheelHook
 from window_layer import (
+    HTBOTTOM,
+    HTBOTTOMLEFT,
+    HTBOTTOMRIGHT,
     HTCAPTION,
     HTCLIENT,
+    HTLEFT,
+    HTRIGHT,
     HTTRANSPARENT,
     WM_ENTERSIZEMOVE,
     WM_EXITSIZEMOVE,
@@ -82,7 +87,6 @@ from ui_common import (
     SETTING_ROW_TITLE_FONT_PX,
     SETTING_STATUS_FONT_PX,
     SETTING_TITLE_FONT_PX,
-    add_soft_shadow,
     best_contrast_color,
     css_rgba,
     enlarge_control_font,
@@ -99,9 +103,9 @@ from calendar_manager import CalendarManager
 from notify_manager import NotificationManager
 from startup import reconcile_startup
 from floating_launcher import FloatingModeController
-from surprise_mode import SurpriseService, SURPRISE_TEXT
-from surprise_swirl import SwirlThemeTokens, swirl_tokens
-from surprise_ink import make_surprise_background
+from ink_theme import InkTheme, InkThemeController, _darken
+from ink_swirl import swirl_tokens
+from ink_background import make_ink_background
 
 
 MIN_WIDTH = 320
@@ -109,13 +113,26 @@ MAX_WIDTH = 720
 MAX_WIDTH_RATIO = 0.52
 MIN_HEIGHT = 320
 MAX_HEIGHT_RATIO = 0.7
-SURPRISE_MIN_WIDTH = 400
+# 灵动水墨 is an airy ink-wash surface; give its text a little more room than the frost skin.
+INK_MIN_WIDTH = 400
+# Native drag-resize hot zones along the bottom corners ("左右下角"): an RESIZE_EDGE-thick strip
+# along the bottom/left/right edges, widening to RESIZE_CORNER squares at the two bottom corners.
+# They sit in the otherwise click-through frame, so they must stay clear of the content inset
+# (OUTER_X = 26 / corner_margin = 14 exceed all of these).
+RESIZE_EDGE = 8
+RESIZE_CORNER = 20
+RESIZE_SIDE = 28
+# Forgiveness margin around a todo row's checkbox: inside it the cursor promises a click
+# (pointing hand), a press never arms drag-reorder, and release toggles the box.
+CHECKBOX_ZONE_PAD = 6
 # A vertical scrollbar lives inside the list viewport. Reserve its full painted width in the
-# collapsed layout even before Qt decides whether it is needed; otherwise adding the special
-# pinned row can make the bar appear and steal pixels from already-fixed DDL/calendar columns.
+# collapsed layout even before Qt decides whether it is needed; otherwise adding the calendar
+# header can make the bar appear and steal pixels from already-fixed DDL/calendar columns.
 SCROLLBAR_LAYOUT_RESERVE = 12
 ROW_HEIGHT = 44
 OUTER_X = 26
+# 空状态占位文字（「暂无待办」）；kept in one constant so both construction and recolour paths stay in sync.
+EMPTY_HINT_FONT_PX = 20
 # DDL column: a fixed-width deadline column shown to the right of each todo's text,
 # separated from it by a solid vertical line. Width is only reserved from the text
 # column when at least one active todo actually carries a ddl.
@@ -213,18 +230,22 @@ class RoundButton(QPushButton):
         self.tone = tone
         self.setFixedSize(size, size)
         self.setCursor(Qt.PointingHandCursor)
-        self.apply_surprise_theme(False)
+        self.apply_ink_theme(None)
         install_tooltip(self)
 
-    def apply_surprise_theme(self, active: bool) -> None:
+    def apply_ink_theme(self, theme: "InkTheme | None") -> None:
         palette = {
             "neutral": ("rgba(255,255,255,88)", "rgba(255,255,255,132)", "rgba(255,255,255,175)", "#111820", "rgba(255,255,255,150)"),
             "add": ("rgba(33,150,243,196)", "rgba(33,150,243,225)", "rgba(18,121,218,235)", "white", "rgba(255,255,255,170)"),
             "hide": ("rgba(255,255,255,105)", "rgba(255,255,255,150)", "rgba(255,255,255,190)", "#30404C", "rgba(255,255,255,150)"),
             "confirm": ("rgba(45,184,130,205)", "rgba(45,184,130,235)", "rgba(24,146,101,242)", "white", "rgba(255,255,255,170)"),
         }
-        if active:
-            palette["add"] = ("rgba(232,93,147,210)", "rgba(241,119,165,235)", "rgba(201,65,119,242)", "white", "rgba(255,255,255,190)")
+        if theme is not None:
+            accent, pressed = theme.accent, _darken(theme.accent, 0.13)
+            palette["add"] = (
+                css_rgba(qcolor(accent), 0.82), css_rgba(qcolor(accent), 0.92), css_rgba(qcolor(pressed), 0.95),
+                "white", "rgba(255,255,255,190)",
+            )
             palette["confirm"] = palette["add"]
         bg, hover, pressed, color, border = palette.get(self.tone, palette["neutral"])
         radius = self.width() // 2
@@ -315,11 +336,15 @@ class TodoRow(QFrame):
         self.parent_window = parent_window
         self._drag_start: QPoint | None = None
         self._dragging = False
+        self._zone_press = False
         self._style_signature: tuple[str, bool, bool, str] | None = None
         self._halo: QGraphicsDropShadowEffect | None = None
         self.setMinimumHeight(ROW_HEIGHT)
         self.setObjectName("todoRow")
         self.setCursor(Qt.OpenHandCursor)
+        # Hover moves (no buttons held) reach mouseMoveEvent so the cursor can flip between the
+        # drag hand and the checkbox click pointer as the pointer travels along the row.
+        self.setMouseTracking(True)
         self.setStyleSheet(
             f"""
             QFrame#todoRow {{
@@ -341,9 +366,9 @@ class TodoRow(QFrame):
         self.checkbox.setStyleSheet(
             """
             QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 5px;
+                width: 24px;
+                height: 24px;
+                border-radius: 7px;
                 border: 1px solid rgba(25,35,45,120);
                 background: rgba(255,255,255,80);
             }
@@ -511,8 +536,21 @@ class TodoRow(QFrame):
     def _complete_changed(self) -> None:
         self.parent_window.complete_todo(self.todo.id, self.checkbox.isChecked(), self)
 
+    def _in_checkbox_zone(self, pos: QPoint) -> bool:
+        zone = self.checkbox.geometry().adjusted(
+            -CHECKBOX_ZONE_PAD, -CHECKBOX_ZONE_PAD, CHECKBOX_ZONE_PAD, CHECKBOX_ZONE_PAD
+        )
+        return zone.intersected(self.rect()).contains(pos)
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
+            if self._in_checkbox_zone(event.position().toPoint()):
+                # Inside the checkbox's forgiveness margin: never arm the reorder drag, or a
+                # click aimed at the box tilts into a row drag before the threshold is crossed.
+                self._zone_press = True
+                event.accept()
+                return
+            self._zone_press = False
             self._drag_start = event.position().toPoint()
             self._dragging = False
             # Accept the press so this row keeps Qt's implicit mouse grab while the pointer moves
@@ -523,6 +561,10 @@ class TodoRow(QFrame):
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_start is None or not (event.buttons() & Qt.LeftButton):
+            # Hover: inside the checkbox zone show the click pointer, elsewhere the drag hand, so
+            # the cursor always tells the user what the next press will do before they commit.
+            in_zone = self._in_checkbox_zone(event.position().toPoint())
+            self.setCursor(Qt.PointingHandCursor if in_zone else Qt.OpenHandCursor)
             super().mouseMoveEvent(event)
             return
         distance = (event.position().toPoint() - self._drag_start).manhattanLength()
@@ -538,11 +580,22 @@ class TodoRow(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:
         was_dragging = self._dragging
+        zone_click = self._zone_press
         self._drag_start = None
         self._dragging = False
+        self._zone_press = False
         self.setCursor(Qt.OpenHandCursor)
-        if event.button() == Qt.LeftButton and was_dragging:
+        if event.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        if was_dragging:
             self.parent_window.finish_todo_reorder(self)
+            event.accept()
+            return
+        if zone_click and self._in_checkbox_zone(event.position().toPoint()):
+            # A press that started beside the box (the box itself is handled by the child widget
+            # and never reaches here) honors the pointer cursor and toggles on release.
+            self.checkbox.click()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -583,7 +636,7 @@ class CalendarRow(QFrame):
         self.checkbox.setStyleSheet(
             """
             QCheckBox::indicator {
-                width: 18px; height: 18px; border-radius: 5px;
+                width: 24px; height: 24px; border-radius: 7px;
                 border: 1px solid rgba(25,35,45,120); background: rgba(255,255,255,80);
             }
             QCheckBox::indicator:hover { background: rgba(255,255,255,140); }
@@ -718,7 +771,8 @@ class TodoEditorPopup(QDialog):
             }}
             """
         )
-        add_soft_shadow(self.panel, blur=22, y=8, alpha=60)
+        # No add_soft_shadow: this panel fills the tool window, so the shadow would be clipped
+        # (invisible) while the effect re-renders + re-blurs the subtree on every repaint.
 
         outer = QVBoxLayout(self.panel)
         outer.setContentsMargins(18, 14, 14, 14)
@@ -744,16 +798,17 @@ class TodoEditorPopup(QDialog):
         self.ok.clicked.connect(self.accept)
         row.addWidget(self.ok)
         outer.addLayout(row)
-        surprise = getattr(getattr(parent_window, "app", None), "surprise", None)
-        self.apply_surprise_theme(bool(surprise and surprise.active))
+        ink = getattr(getattr(parent_window, "app", None), "ink", None)
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
 
-    def apply_surprise_theme(self, active: bool) -> None:
-        background = "rgba(255,240,246,242)" if active else "rgba(248,252,255,238)"
-        field = "rgba(255,255,255,185)" if active else "rgba(255,255,255,150)"
-        color = SURPRISE_TEXT if active else "#111820"
+    def apply_ink_theme(self, theme: "InkTheme | None") -> None:
+        background = css_rgba(qcolor(theme.popup_bg), 0.95) if theme else "rgba(248,252,255,238)"
+        field = "rgba(255,255,255,185)" if theme else "rgba(255,255,255,150)"
+        color = theme.text if theme else "#111820"
+        selection = css_rgba(qcolor(theme.accent), 0.47) if theme else "rgba(232,93,147,120)"
         self.panel.setStyleSheet(
             f"QFrame#addPanel {{ {FONT_STACK_QSS} border-radius: 22px; border: 1px solid rgba(255,255,255,170); background: {background}; }}"
-            f" QLineEdit {{ {FONT_STACK_QSS} border: 1px solid rgba(255,255,255,145); border-radius: 17px; background: {field}; color: {color}; font-size: {POPUP_INPUT_FONT_PX}px; padding: 9px 14px; selection-background-color: rgba(232,93,147,120); }}"
+            f" QLineEdit {{ {FONT_STACK_QSS} border: 1px solid rgba(255,255,255,145); border-radius: 17px; background: {field}; color: {color}; font-size: {POPUP_INPUT_FONT_PX}px; padding: 9px 14px; selection-background-color: {selection}; }}"
         )
 
     def _position(self, point: QPoint, width: int) -> None:
@@ -833,8 +888,8 @@ class HistoryWindow(QDialog):
             }}
             """
         )
-        add_soft_shadow(self.frame, blur=34, y=12, alpha=80)
-
+        # No add_soft_shadow: full-bleed frame → shadow clipped (invisible) but still taxes
+        # every child repaint with a full re-render + blur (same jank as the settings window).
         layout = QVBoxLayout(self.frame)
         layout.setContentsMargins(38, 34, 38, 38)
         layout.setSpacing(24)
@@ -845,7 +900,7 @@ class HistoryWindow(QDialog):
         title = TitleLabel("历史记录")
         set_label_font(title, SETTING_TITLE_FONT_PX)
         subtitle = BodyLabel("已归档的待办事项可以随时恢复。")
-        subtitle.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,150); font-size: {SETTING_STATUS_FONT_PX}px;")
+        set_label_font(subtitle, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,150)")
         titles.addWidget(title)
         titles.addWidget(subtitle)
         header.addLayout(titles, 1)
@@ -872,10 +927,14 @@ class HistoryWindow(QDialog):
         self.scroll.setWidget(self.content)
         layout.addWidget(self.scroll, 1)
         self.refresh()
-        self.apply_surprise_theme(getattr(getattr(self.app, "surprise", None), "active", False))
+        ink = getattr(self.app, "ink", None)
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
 
-    def apply_surprise_theme(self, active: bool) -> None:
-        background = "qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #FFF8FB,stop:1 #FFE3EC)" if active else "rgb(246,248,252)"
+    def apply_ink_theme(self, theme: "InkTheme | None") -> None:
+        background = (
+            f"qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 {theme.panel_top},stop:1 {theme.panel_bottom})"
+            if theme else "rgb(246,248,252)"
+        )
         self.frame.setStyleSheet(
             f"QFrame#fluentPanel {{ {FONT_STACK_QSS} background: {background}; border: 1px solid rgba(255,255,255,185); border-radius: 22px; }}"
         )
@@ -956,7 +1015,7 @@ class AcrylicSkin:
     geometry_scale = 1.0
     corner_margin = 14
     # None -> use settings.windowTint for the frost and pick text deterministically by luminance.
-    # SurpriseSkin overrides these so the themed look isn't special-cased across the dispatch.
+    # InkSkin overrides these so the themed look isn't special-cased across the dispatch.
     acrylic_tint: "str | None" = None
     text_override: "str | None" = None
 
@@ -976,16 +1035,16 @@ ACRYLIC_TEXT_DARK = "#1B2127"
 ACRYLIC_TEXT_LIGHT = "#E8ECEF"
 
 
-class SurpriseSkin:
-    """Dynamic ink-wash surface used only while the encrypted surprise mode is active. Its colour
-    (and the overlay-safe text colour) follow the chosen 拾光纸条 theme."""
+class InkSkin:
+    """Animated ink-wash surface (灵动水墨). Its colour (and the overlay-safe text colour)
+    follow the chosen 水墨主题."""
 
-    kind = "surprise_swirl"
+    kind = "ink"
     geometry_scale = 1.0
     corner_margin = 14
 
     def __init__(self, text_override: "str | None" = None) -> None:
-        self.text_override = text_override or SwirlThemeTokens().text_overlay_safe
+        self.text_override = text_override or swirl_tokens("qinghua").text_overlay_safe
 
     def vertical_padding(self, height: int) -> int:
         return 0
@@ -1058,12 +1117,12 @@ class MemoWindow(QWidget):
         self._image_bg: _ImageBackground | None = None
         self._image_pixmap: QPixmap | None = None
         self._image_luminance: float = 1.0
-        # Surprise-mode background: GPU ink-wash when available, else the QPainter swirl
-        # (see surprise_ink.make_surprise_background). Either exposes the same lifecycle.
-        # `_surprise_swirl_theme` tracks which 拾光纸条 palette the live widget was built for, so a
-        # theme switch rebuilds it instead of keeping the stale colours.
-        self._surprise_swirl_bg: QWidget | None = None
-        self._surprise_swirl_theme: str | None = None
+        # Ink-skin background: GPU ink-wash when available, else the QPainter swirl
+        # (see ink_background.make_ink_background). Either exposes the same lifecycle.
+        # `_ink_theme_key` tracks which 水墨主题 palette the live widget was built for, so a
+        # theme switch recolours it in place instead of keeping the stale colours.
+        self._ink_bg: QWidget | None = None
+        self._ink_theme_key: str | None = None
         self.setWindowTitle("桌面备忘")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -1079,13 +1138,13 @@ class MemoWindow(QWidget):
         self._rows: dict[str, TodoRow] = {}
         self._event_rows: dict[str, CalendarRow] = {}
         self._calendar_header: QLabel | None = None
-        self._surprise_row: QWidget | None = None
         # Expanded mode grows the window to fit all content (no height clamp, no scrollbar, no
         # elided text); collapsed mode keeps the default clamp + scroll behavior.
         self._expanded = False
         self._shown_once = False
         self._window_layer_applied = False
         self._is_window_moving = False
+        self._size_at_drag_start = (0, 0)
         self._reorder_row: TodoRow | None = None
         self._build_content()
         # Global wheel hook: scroll the list whenever the cursor is over it, bypassing the
@@ -1158,7 +1217,7 @@ class MemoWindow(QWidget):
 
         self.empty = QLabel("暂无待办")
         self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setStyleSheet("color: rgba(17,24,32,120); font-size: 15px;")
+        self.empty.setStyleSheet(f"{FONT_STACK_QSS} color: rgba(17,24,32,120); font-size: {EMPTY_HINT_FONT_PX}px;")
         self.layout.addWidget(self.empty, 1)
 
         self.add_popup = TodoEditorPopup(self)
@@ -1173,10 +1232,10 @@ class MemoWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Only spin the swirl when it is the active surface — in surprise mode the user may have
-        # picked the frost/image skin instead, leaving the swirl widget allocated but hidden.
-        if self._surprise_swirl_bg is not None and self._active_skin_kind == "surprise_swirl":
-            self._surprise_swirl_bg.start()
+        # Only spin the swirl when it is the active surface — with another skin selected the
+        # ink widget stays allocated but hidden.
+        if self._ink_bg is not None and self._active_skin_kind == "ink":
+            self._ink_bg.start()
         self.protect_content_layer()
         for delay in (0, 80, 180, 420):
             QTimer.singleShot(delay, self.protect_content_layer)
@@ -1200,8 +1259,8 @@ class MemoWindow(QWidget):
         self._hide_timer.stop()
         self._cancel_slide()
         self._dock_animating = False
-        if self._surprise_swirl_bg is not None:
-            self._surprise_swirl_bg.stop()
+        if self._ink_bg is not None:
+            self._ink_bg.stop()
         super().hideEvent(event)
 
     def cleanup(self) -> None:
@@ -1210,8 +1269,8 @@ class MemoWindow(QWidget):
         self._dock_poll.stop()
         self._hide_timer.stop()
         self._cancel_slide()
-        if self._surprise_swirl_bg is not None:
-            self._surprise_swirl_bg.cleanup()
+        if self._ink_bg is not None:
+            self._ink_bg.cleanup()
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
@@ -1239,8 +1298,8 @@ class MemoWindow(QWidget):
             self.container.setGeometry(0, 0, self.width(), self.height())
         if self._image_bg is not None:
             self._image_bg.setGeometry(0, 0, self.width(), self.height())
-        if self._surprise_swirl_bg is not None:
-            self._surprise_swirl_bg.setGeometry(0, 0, self.width(), self.height())
+        if self._ink_bg is not None:
+            self._ink_bg.setGeometry(0, 0, self.width(), self.height())
 
     def nativeEvent(self, event_type, message):
         if event_type == b"windows_generic_MSG":
@@ -1262,6 +1321,9 @@ class MemoWindow(QWidget):
                     return True, HTCLIENT
                 if self._is_interactive_point(local):
                     return True, HTCLIENT
+                zone = self._resize_zone(local)
+                if zone is not None:
+                    return True, zone
                 if self.app.state.settings.layerMode == "alwaysVisibleClickThrough":
                     return True, HTTRANSPARENT
             if msg.message == WM_MOUSEMOVE:
@@ -1275,6 +1337,30 @@ class MemoWindow(QWidget):
                 QTimer.singleShot(0, self._end_window_move)
         return super().nativeEvent(event_type, message)
 
+    def _resize_zone(self, local: QPoint) -> "int | None":
+        """Hit-test the drag-resize hot zones along the bottom corners, returning the WM_NCHITTEST
+        code (HTBOTTOMLEFT/HTBOTTOMRIGHT/HTBOTTOM/HTLEFT/HTRIGHT) or None. The two bottom corners
+        are RESIZE_CORNER squares for a comfortable diagonal grab, widening out to an
+        RESIZE_EDGE strip along the bottom and short RESIZE_SIDE strips up the left/right edges.
+        The zones live in the otherwise click-through frame; rows/controls are checked before
+        this, and the content inset (OUTER_X / corner margin) keeps them from overlapping.
+        Disabled while dock-hidden and in expanded mode (expanded auto-fits its size)."""
+        if self._dock_hidden or self._dock_animating or self._expanded:
+            return None
+        w, h = self.width(), self.height()
+        x, y = local.x(), local.y()
+        if x <= RESIZE_CORNER and y >= h - RESIZE_CORNER:
+            return HTBOTTOMLEFT
+        if x >= w - RESIZE_CORNER and y >= h - RESIZE_CORNER:
+            return HTBOTTOMRIGHT
+        if y >= h - RESIZE_EDGE:
+            return HTBOTTOM
+        if x <= RESIZE_EDGE and y >= h - RESIZE_SIDE:
+            return HTLEFT
+        if x >= w - RESIZE_EDGE and y >= h - RESIZE_SIDE:
+            return HTRIGHT
+        return None
+
     def _rect_for(self, widget: QWidget) -> QRect:
         top_left = widget.mapTo(self, QPoint(0, 0))
         return QRect(top_left, widget.size())
@@ -1287,8 +1373,6 @@ class MemoWindow(QWidget):
             widgets.extend([row.checkbox, row.urgent, row.ddl_label, row.edit_btn])
         for row in self._event_rows.values():
             widgets.append(row.checkbox)
-        if self._surprise_row is not None:
-            widgets.extend([self._surprise_row.checkbox, self._surprise_row.draw])
         # Wheel scrolling over the list is handled by the global wheel hook (see
         # _on_global_wheel). Todo rows are handled separately by _point_over_todo_row; outside
         # those rows, only these discrete controls receive clicks.
@@ -1307,6 +1391,9 @@ class MemoWindow(QWidget):
         if self._is_window_moving:
             return
         self._is_window_moving = True
+        # Remember the size at drag start so _end_window_move can tell a resize loop (native
+        # corner/edge drag) apart from a plain move.
+        self._size_at_drag_start = (self.width(), self.height())
         # The frost / image surface follows the window natively — nothing to spin up on move.
 
     def _end_window_move(self) -> None:
@@ -1318,6 +1405,16 @@ class MemoWindow(QWidget):
         self.app.save_later()
         self.protect_content_layer()
         self._maybe_dock()
+        if (self.width(), self.height()) != self._size_at_drag_start:
+            self._finish_user_resize()
+
+    def _finish_user_resize(self) -> None:
+        """A native corner/edge drag changed the window size: pin it as a manual size so the
+        auto content-fit sizing stops overriding it (until 展开全部/收起 resets the choice)."""
+        self.app.state.window.userSized = True
+        self.app.state.window.width = self.width()
+        self.app.state.window.height = self.height()
+        self.refresh()
 
     # ── Edge auto-hide (dock) ────────────────────────────────────────────────────────────
     def _dock_geometry(self) -> QRect:
@@ -1520,16 +1617,10 @@ class MemoWindow(QWidget):
         self.move(x, y)
 
     def _make_skin(self, skin_name: str):
-        surprise = getattr(self.app, "surprise", None)
-        surprise_active = surprise is not None and surprise.active
-        if skin_name == "surprise_swirl":
-            # The swirl is a real, selectable skin, but only valid while surprise mode is active —
-            # outside it (or in a hand-edited state) it falls back to the frost skin, so the
-            # encrypted-only background can never render without the decrypted payload.
-            if surprise_active:
-                key = self.app.state.settings.surpriseNoteTheme
-                return SurpriseSkin(text_override=swirl_tokens(key).text_overlay_safe)
-            return AcrylicSkin()
+        if skin_name == "ink":
+            # 灵动水墨 is a normal, always-available skin; the 水墨主题 setting picks its palette.
+            key = self.app.state.settings.inkTheme
+            return InkSkin(text_override=swirl_tokens(key).text_overlay_safe)
         if skin_name.startswith("image:"):
             skin_id = skin_name[len("image:"):]
             custom = next((s for s in self.app.state.settings.customSkins if s.id == skin_id), None)
@@ -1548,8 +1639,8 @@ class MemoWindow(QWidget):
         skin_changed = self._active_skin_kind not in (None, new_kind)
         if new_kind == "image":
             self._apply_image_mode()
-        elif new_kind == "surprise_swirl":
-            self._apply_surprise_swirl_mode()
+        elif new_kind == "ink":
+            self._apply_ink_mode()
         else:
             self._apply_acrylic_mode()
         # Frost and image use the same full-fill geometry, but switching between them swaps the
@@ -1566,7 +1657,7 @@ class MemoWindow(QWidget):
         # is hidden so the frost shows through.
         self._active_skin_kind = "acrylic"
         self._hide_image_bg()
-        self._hide_surprise_swirl_bg()
+        self._hide_ink_bg()
         self._apply_acrylic_effect()
         self.apply_text_colors()
 
@@ -1580,27 +1671,27 @@ class MemoWindow(QWidget):
         if self._image_bg is not None:
             self._image_bg.hide()
 
-    def _ensure_surprise_swirl_bg(self, theme_key: str) -> QWidget:
-        if self._surprise_swirl_bg is None:
-            self._surprise_swirl_bg = make_surprise_background(self, theme_key)
-            self._surprise_swirl_theme = theme_key
-            self._surprise_swirl_bg.setGeometry(0, 0, self.width(), self.height())
-        elif self._surprise_swirl_theme != theme_key:
-            # Recolour in place so the note-theme switch doesn't tear down / rebuild the GL context.
-            self._surprise_swirl_bg.set_theme(theme_key)
-            self._surprise_swirl_theme = theme_key
-        return self._surprise_swirl_bg
+    def _ensure_ink_bg(self, theme_key: str) -> QWidget:
+        if self._ink_bg is None:
+            self._ink_bg = make_ink_background(self, theme_key)
+            self._ink_theme_key = theme_key
+            self._ink_bg.setGeometry(0, 0, self.width(), self.height())
+        elif self._ink_theme_key != theme_key:
+            # Recolour in place so the ink-theme switch doesn't tear down / rebuild the GL context.
+            self._ink_bg.set_theme(theme_key)
+            self._ink_theme_key = theme_key
+        return self._ink_bg
 
-    def _hide_surprise_swirl_bg(self) -> None:
-        if self._surprise_swirl_bg is not None:
-            self._surprise_swirl_bg.setActive(False)
-            self._surprise_swirl_bg.hide()
+    def _hide_ink_bg(self) -> None:
+        if self._ink_bg is not None:
+            self._ink_bg.setActive(False)
+            self._ink_bg.hide()
 
-    def _apply_surprise_swirl_mode(self) -> None:
-        self._active_skin_kind = "surprise_swirl"
+    def _apply_ink_mode(self) -> None:
+        self._active_skin_kind = "ink"
         self._remove_acrylic()
         self._hide_image_bg()
-        background = self._ensure_surprise_swirl_bg(self.app.state.settings.surpriseNoteTheme)
+        background = self._ensure_ink_bg(self.app.state.settings.inkTheme)
         background.setActive(True)
         background.setGeometry(0, 0, self.width(), self.height())
         background.show()
@@ -1617,7 +1708,7 @@ class MemoWindow(QWidget):
         # (capture-excluded) content layer, and DWM rounds the window corners.
         self._active_skin_kind = "image"
         self._remove_acrylic()
-        self._hide_surprise_swirl_bg()
+        self._hide_ink_bg()
         path = getattr(self.skin, "image_path", None)
         pixmap = load_skin_pixmap(path) if path is not None else None
         self._image_pixmap = pixmap
@@ -1698,8 +1789,8 @@ class MemoWindow(QWidget):
         if target_index == rows.index(row):
             return
         # target_index counts TodoRows only, but insertWidget is layout-absolute. Offset by any
-        # leading non-TodoRow widgets (the pinned surprise row) so a drop lands at the visual slot
-        # and a todo can never be inserted above the pinned row.
+        # leading non-TodoRow widgets (the calendar header) so a drop lands at the visual slot
+        # and a todo can never be inserted above the header.
         leading = 0
         for index in range(self.list_layout.count()):
             if isinstance(self.list_layout.itemAt(index).widget(), TodoRow):
@@ -1729,16 +1820,11 @@ class MemoWindow(QWidget):
         self._rows.clear()
         self._event_rows.clear()
         self._calendar_header = None
-        self._surprise_row = self.app.surprise.make_row(self.content)
 
         active = sorted(self.app.state.todos, key=self._todo_sort_key)
         events = self._visible_calendar_events()
-        has_surprise = self._surprise_row is not None
-        self.scroll.setVisible(bool(active) or bool(events) or has_surprise)
-        self.empty.setVisible(not active and not events and not has_surprise)
-
-        if self._surprise_row is not None:
-            self.list_layout.addWidget(self._surprise_row)
+        self.scroll.setVisible(bool(active) or bool(events))
+        self.empty.setVisible(not active and not events)
 
         for todo in active:
             row = TodoRow(todo, self.app.state.settings, self)
@@ -1786,6 +1872,9 @@ class MemoWindow(QWidget):
 
     def toggle_expanded(self) -> None:
         self._expanded = not self._expanded
+        # Expanded auto-fits everything; treat the toggle as "back to automatic sizing" so a
+        # previous manual drag doesn't fight the fit-to-content model.
+        self.app.state.window.userSized = False
         self.expand_button.setText("▴" if self._expanded else "▾")
         self.expand_button.setToolTip("收起" if self._expanded else "展开全部")
         self.refresh()
@@ -1855,7 +1944,7 @@ class MemoWindow(QWidget):
             )
         # `normal` already resolves to the manual/acrylic/image color, so it is the right base
         # for the empty-state label in every skin and font mode.
-        self.empty.setStyleSheet(f"{FONT_STACK_QSS} color: {css_rgba(normal, 0.58)}; font-size: 15px;")
+        self.empty.setStyleSheet(f"{FONT_STACK_QSS} color: {css_rgba(normal, 0.58)}; font-size: {EMPTY_HINT_FONT_PX}px;")
 
     def _resize_for_content(self, active: list[TodoItem], events: list[CalendarEvent] | None = None) -> None:
         events = events or []
@@ -1868,11 +1957,9 @@ class MemoWindow(QWidget):
         ddl_reserve = (ddl_width + DDL_SEP_WIDTH + DDL_COL_GAPS) if column_active else 0
         scrollbar_reserve = 0 if self._expanded else SCROLLBAR_LAYOUT_RESERVE
         trailing_reserve = ddl_reserve + scrollbar_reserve
-        width = self._adaptive_width(active, events, screen, trailing_reserve)
-        text_width = self._text_width_for_window(width, trailing_reserve)
+        auto_width = self._adaptive_width(active, events, screen, trailing_reserve)
+        text_width = self._text_width_for_window(auto_width, trailing_reserve)
         content_height = sum(self._measure_row_height(todo.text, text_width, todo.location) for todo in active)
-        if self._surprise_row is not None:
-            content_height += self._surprise_row.height()
         if events:
             # Calendar rows render "📅 {summary}", which wraps (and grows taller than ROW_HEIGHT)
             # for long titles — measure them like todos so the window height isn't underestimated
@@ -1890,18 +1977,32 @@ class MemoWindow(QWidget):
         needed = MEMO_TOP_BLOCK + content_height + 2 * corner
         wanted = max(MIN_HEIGHT, math.ceil(needed / scale))
         screen_cap = max(MIN_HEIGHT, screen.height() - 64)
-        self.setFixedWidth(width)
-        if self._expanded:
+        width_cap = max(MIN_WIDTH, screen.width() - 64)
+        # min/max range (not setFixed*) so the native corner/edge drag-resize can change the
+        # size; in auto mode the computed size is applied explicitly below.
+        self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
+        self.setMaximumSize(width_cap, screen_cap)
+        # A drag-resize pins a manual size (window.userSized): respect it in collapsed mode and
+        # just reflow the content to it. 展开全部/收起 clears the flag back to auto-fit.
+        manual = self.app.state.window.userSized and not self._expanded
+        if manual:
+            width = min(max(self.app.state.window.width, MIN_WIDTH), width_cap)
+            height = min(max(self.app.state.window.height, MIN_HEIGHT), screen_cap)
+            text_width = self._text_width_for_window(width, trailing_reserve)
+            self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        elif self._expanded:
             # Grow to fit everything; only the physical screen limits us. Hide the scrollbar
             # when it all fits, but fall back to AsNeeded if content still exceeds the screen.
+            width = auto_width
             height = min(wanted, screen_cap)
             fits = wanted <= screen_cap
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff if fits else Qt.ScrollBarAsNeeded)
-            self.setFixedHeight(height)
         else:
+            width = auto_width
             height = min(wanted, int(screen.height() * MAX_HEIGHT_RATIO), screen_cap)
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.setFixedHeight(height)
+        if not manual and (width, height) != (self.width(), self.height()):
+            self.resize(width, height)
 
         # Inset the content. Both skins fill the window (geometry_scale = 1.0 → vertical/horizontal
         # padding are 0), so this collapses to OUTER_X horizontally and the corner margin vertically.
@@ -1926,7 +2027,7 @@ class MemoWindow(QWidget):
             self._reposition_dock()
 
     def _adaptive_width(self, active: list[TodoItem], events: list[CalendarEvent], screen: QRect, ddl_reserve: int = 0) -> int:
-        minimum = SURPRISE_MIN_WIDTH if getattr(self.app.surprise, "active", False) else MIN_WIDTH
+        minimum = INK_MIN_WIDTH if self.skin.kind == "ink" else MIN_WIDTH
         if not active and not events:
             return minimum
         metrics = QFontMetrics(mixed_font(12))
@@ -2055,18 +2156,23 @@ class MemoWindow(QWidget):
         anim.finished.connect(lambda: self.app.archive_todo(todo_id))
         anim.start(QPropertyAnimation.DeleteWhenStopped)
 
-    def apply_surprise_theme(self, active: bool) -> None:
+    def apply_ink_theme(self, theme: "InkTheme | None") -> None:
         self._acrylic_signature = None
         for button in (self.add_button, self.hide_button, self.expand_button):
-            button.apply_surprise_theme(active)
+            button.apply_ink_theme(theme)
         self.apply_settings(refresh_rows=True)
-        self.add_popup.apply_surprise_theme(active)
+        self.add_popup.apply_ink_theme(theme)
 
 
 class LiquidMemoApp:
     def __init__(self) -> None:
         self.qt = QApplication(sys.argv)
         self.qt.setQuitOnLastWindowClosed(False)
+        if sys.platform == "win32":
+            import ctypes
+            # Own taskbar identity: without this, dev runs under pythonw.exe group under the
+            # Python AppUserModelID and taskbar buttons keep the Python icon despite windowIcon.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CEQ151.LiquidMemoWidget")
         setTheme(Theme.LIGHT)
         self.qt.setFont(mixed_font(10))
         self.qt.setWindowIcon(tray_icon())
@@ -2082,7 +2188,7 @@ class LiquidMemoApp:
         self.save_timer = QTimer()
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.save)
-        self.surprise = SurpriseService(self)
+        self.ink = InkThemeController(self)
         self.window = MemoWindow(self)
         self.settings_window = SettingsWindow(self)
         self.history_window = HistoryWindow(self)
@@ -2090,7 +2196,7 @@ class LiquidMemoApp:
         self.notifier = NotificationManager(self)
         self.updater = UpdateManager(self)
         self.floating = FloatingModeController(self)
-        self.surprise.bind_ui()
+        self.ink.bind_ui()
         self.tray_menu: QMenu | None = None
         self.tray = QSystemTrayIcon(tray_icon())
         self.tray.setToolTip("桌面备忘")
@@ -2124,13 +2230,10 @@ class LiquidMemoApp:
         Hidden windows pick it up from their showEvent."""
         set_capture_exclusion(not self.state.settings.allowScreenshot)
         self.window.protect_content_layer()
-        surprise = getattr(self, "surprise", None)
-        note_dialog = surprise.note_dialog if surprise is not None else None
         floating = getattr(self, "floating", None)
         launcher = floating.launcher if floating is not None else None
-        for widget in (launcher, note_dialog):
-            if widget is not None and widget.isVisible():
-                protect_window_from_capture(int(widget.winId()))
+        if launcher is not None and launcher.isVisible():
+            protect_window_from_capture(int(launcher.winId()))
 
     def archive_todo(self, todo_id: str) -> None:
         for index, todo in enumerate(self.state.todos):
@@ -2170,9 +2273,11 @@ class LiquidMemoApp:
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
         menu.setMinimumWidth(264)
-        menu_bg = "rgb(255,240,246)" if self.surprise.active else "rgb(251,252,254)"
-        menu_selected = "rgba(232,93,147,42)" if self.surprise.active else "rgba(0,103,192,30)"
-        menu_selected_text = SURPRISE_TEXT if self.surprise.active else "rgb(0,71,138)"
+        ink = getattr(self, "ink", None)
+        theme = ink.theme if getattr(ink, "active", False) else None
+        menu_bg = theme.popup_bg if theme else "rgb(251,252,254)"
+        menu_selected = css_rgba(qcolor(theme.accent), 42 / 255) if theme else "rgba(0,103,192,30)"
+        menu_selected_text = theme.text if theme else "rgb(0,71,138)"
         menu.setStyleSheet(
             f"""
             QMenu {{
@@ -2279,7 +2384,7 @@ class LiquidMemoApp:
         """
         self.save_timer.stop()
         self.save()
-        for manager in (self.calendar, self.notifier, self.surprise, self.floating):
+        for manager in (self.calendar, self.notifier, self.ink, self.floating):
             try:
                 manager.stop()
             except Exception:
@@ -2298,7 +2403,7 @@ class LiquidMemoApp:
         try:
             self.calendar.stop()
             self.notifier.stop()
-            self.surprise.stop()
+            self.ink.stop()
         except Exception:
             pass
         try:

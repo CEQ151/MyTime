@@ -116,12 +116,12 @@ def tray_icon() -> QIcon:
 # Settings / dialog typography. Chinese renders in Microsoft YaHei, Latin in Times New Roman
 # (a serif face — sizes are kept generous so it stays readable), and nothing is bold per the
 # requested style; visual hierarchy comes from size alone.
-SETTING_TITLE_FONT_PX = 30        # 主标题：设置 / 历史记录
-SETTING_NAV_FONT_PX = 25          # 左侧分类：外观 / 行为 / 日历订阅 / 关于
-SETTING_ROW_TITLE_FONT_PX = 24    # 设置项标题：皮肤 / 窗口颜色 / 窗口模式 …
-SETTING_TIP_FONT_PX = 22          # 感叹号悬浮说明气泡
-SETTING_CONTROL_FONT_PX = 21      # 下拉框 / 开关 / 按钮 / 颜色等控件
-SETTING_STATUS_FONT_PX = 20       # 副标题 / 状态 / 说明性文字
+SETTING_TITLE_FONT_PX = 34        # 主标题：设置 / 历史记录
+SETTING_NAV_FONT_PX = 28          # 左侧分类：外观 / 行为 / 日历订阅 / 关于
+SETTING_ROW_TITLE_FONT_PX = 27    # 设置项标题：皮肤 / 窗口颜色 / 窗口模式 …
+SETTING_TIP_FONT_PX = 27          # 感叹号悬浮说明气泡
+SETTING_CONTROL_FONT_PX = 27      # 下拉框 / 开关 / 按钮 / 颜色等控件（含下拉弹出菜单条目）
+SETTING_STATUS_FONT_PX = 26       # 副标题 / 状态 / 说明性文字
 POPUP_INPUT_FONT_PX = 19          # 添加备忘 / 编辑截止时间 弹窗输入框
 
 
@@ -159,14 +159,18 @@ def enlarge_control_font(widget: QWidget, px: int = SETTING_CONTROL_FONT_PX) -> 
     widget.setMinimumHeight(max(widget.minimumHeight(), round(px * 2.3)))
 
 
-def set_label_font(label: QWidget, px: int, weight: QFont.Weight = QFont.Normal) -> None:
+def set_label_font(label: QWidget, px: int, weight: QFont.Weight = QFont.Normal, color: str | None = None) -> None:
     # Force a fluent label (TitleLabel/BodyLabel) to a specific pixel size and weight. These
     # labels carry their own bold QSS, so — like enlarge_control_font — the class-name custom
     # stylesheet is what actually wins; setFont keeps QFontMetrics (wrapping) in sync.
+    # setCustomStyleSheet is not cosmetic: qfluentwidgets re-applies its base qss (14px) every
+    # time setThemeColor/theme fires, which wipes a plain setStyleSheet override back to the
+    # library size. The custom sheet is re-merged after each reapply, so it survives.
     label.setFont(mixed_font_px(px, weight))
     name = type(label).__name__
     bold = "bold " if weight >= QFont.DemiBold else ""
-    qss = f"{name} {{ font: {bold}{px}px 'Times New Roman','Microsoft YaHei','Segoe UI Emoji'; }}"
+    extra = f" color: {color};" if color else ""
+    qss = f"{name} {{ font: {bold}{px}px 'Times New Roman','Microsoft YaHei','Segoe UI Emoji';{extra} }}"
     setCustomStyleSheet(label, qss, qss)
 class InfoToolTipFilter(ToolTipFilter):
     """ToolTipFilter whose bubble text is larger than the 12px qfluentwidgets default."""

@@ -1,4 +1,4 @@
-"""Grey-blue fluid background for the opt-in surprise mode.
+"""Grey-blue fluid background for the 灵动水墨 (ink-wash) skin.
 
 The implementation stays entirely in QWidget/QPainter.  Broad solution fields provide depth,
 feathered ellipse chains form soft mid-frequency ink bands, and short-lived cursor impulses bend
@@ -41,9 +41,9 @@ class SwirlThemeTokens:
     text_overlay_safe: str = "#182633"
 
 
-# One token preset per 拾光纸条 theme, so the QPainter fallback background matches the chosen
-# note palette. The "qinghua" entry keeps the original grey-blue look. Keyed by the same theme
-# keys as surprise_mode.NOTE_THEMES; swirl_tokens() falls back to qinghua for anything unknown.
+# One token preset per 水墨主题, so the QPainter fallback background matches the chosen
+# theme palette. The "qinghua" entry keeps the original grey-blue look. Keyed by the same theme
+# keys as ink_theme.INK_THEMES; swirl_tokens() falls back to qinghua for anything unknown.
 SWIRL_TOKENS_BY_THEME: dict[str, "SwirlThemeTokens"] = {
     "qinghua": SwirlThemeTokens(),
     "warm": SwirlThemeTokens(
@@ -331,7 +331,7 @@ class SwirlPainterFallback(QWidget):
         self.set_active(active)
 
     def set_theme(self, theme_key: str) -> None:
-        """Recolour in place when the note theme changes — no widget rebuild. Bands/blobs are
+        """Recolour in place when the ink theme changes — no widget rebuild. Bands/blobs are
         geometry (colour-independent), so only the colour-derived layers are regenerated."""
         self.tokens = swirl_tokens(theme_key)
         self._grain_texture = self._make_grain_texture()

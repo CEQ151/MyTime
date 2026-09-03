@@ -152,6 +152,43 @@ def fetch_latest_release() -> ReleaseInfo:
             raise api_error
 
 
+def local_changelog_section(version: str = APP_VERSION) -> str:
+    """Extract this version's section from the bundled CHANGELOG.md.
+
+    The changelog ships inside the installer (see Build.ps1 --add-data), so the post-update
+    changelog dialog can render offline instead of hitting GitHub again right after an update —
+    the moment when the network is least trusted (rate limits, restricted networks). Returns ""
+    when the file or the section is missing; the caller then falls back to fetching the release
+    notes from GitHub as before. In a dev checkout sys._MEIPASS is absent and the repo root is
+    used."""
+    candidates = []
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidates.append(Path(bundle_dir) / "CHANGELOG.md")
+    candidates.append(Path(__file__).resolve().parents[1] / "CHANGELOG.md")
+    changelog_path = next((path for path in candidates if path.exists()), None)
+    if changelog_path is None:
+        return ""
+    try:
+        lines = changelog_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    pattern = re.compile(rf"^##\s+v?{re.escape(version)}(\s|$)")
+    start = -1
+    for index, line in enumerate(lines):
+        if pattern.match(line):
+            start = index
+            break
+    if start < 0:
+        return ""
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return "\n".join(lines[start + 1:end]).strip()
+
+
 def fetch_release_by_tag(tag: str) -> ReleaseInfo:
     try:
         return _release_from_payload(_get_json(f"{API_BASE}/releases/tags/{tag}"))
@@ -226,12 +263,12 @@ def verify_installer_checksum(path: Path, release: ReleaseInfo) -> bool:
     return True
 
 
-def download_installer(release: ReleaseInfo,
-                       progress: Callable[[int, int], None] | None = None) -> Path:
-    """Download the Setup asset to %TEMP%, verify its SHA256, and return the local path."""
-    if not release.installer_url:
-        raise RuntimeError("该版本没有提供安装包")
-    dest = Path(tempfile.gettempdir()) / release.installer_name
+_DOWNLOAD_ATTEMPTS = 3
+
+
+def _download_once(release: ReleaseInfo, dest: Path,
+                   progress: Callable[[int, int], None] | None) -> tuple[int, int]:
+    """Stream the Setup asset to `dest`; returns (received, total)."""
     request = urllib.request.Request(
         release.installer_url, headers={"User-Agent": f"{GITHUB_REPO}-updater"}
     )
@@ -247,7 +284,32 @@ def download_installer(release: ReleaseInfo,
                 received += len(chunk)
                 if progress:
                     progress(received, total)
+    return received, total
+
+
+def download_installer(release: ReleaseInfo,
+                       progress: Callable[[int, int], None] | None = None) -> Path:
+    """Download the Setup asset to %TEMP%, verify its SHA256, and return the local path.
+
+    Retries the whole download from scratch (up to _DOWNLOAD_ATTEMPTS) on transient network
+    errors; a tens-of-MB transfer over Wi-Fi shouldn't fail the whole update on one dropped
+    connection."""
+    if not release.installer_url:
+        raise RuntimeError("该版本没有提供安装包")
+    dest = Path(tempfile.gettempdir()) / release.installer_name
+    received = total = 0
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        try:
+            received, total = _download_once(release, dest, progress)
+            break
+        except Exception:
+            dest.unlink(missing_ok=True)
+            if attempt == _DOWNLOAD_ATTEMPTS:
+                raise
+            _log(f"download attempt {attempt}/{_DOWNLOAD_ATTEMPTS} failed for {release.installer_name}; retrying")
+            time.sleep(1.5 * attempt)
     if total and received < total:
+        dest.unlink(missing_ok=True)
         raise RuntimeError("下载不完整，请重试")
     try:
         verified = verify_installer_checksum(dest, release)

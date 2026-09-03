@@ -284,3 +284,69 @@ def test_terminate_pid_stops_verified_stuck_process():
     finally:
         if process.poll() is None:
             process.kill()
+
+
+def test_local_changelog_section_extracts_current_version(tmp_path, monkeypatch):
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# 更新日志\n\n"
+        "## v1.2.3 - 2026-09-04\n\n"
+        "> 本版总结。\n\n"
+        "### ✨ 新功能\n- 功能一\n\n"
+        "## v1.0.0 - 2026-01-01\n\n> 旧版。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(updater, "APP_VERSION", "1.2.3", raising=False)
+    section = updater.local_changelog_section("1.2.3")
+    assert "本版总结" in section and "功能一" in section and "旧版" not in section
+    assert updater.local_changelog_section("9.9.9") == ""
+
+
+def test_local_changelog_section_missing_file_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    # Also aim the dev-checkout fallback (updater.__file__ parents[1]) at an empty dir.
+    monkeypatch.setattr(updater, "__file__", str(tmp_path / "src" / "updater.py"))
+    assert updater.local_changelog_section("1.0.0") == ""
+
+
+def test_download_installer_retries_transient_failures(tmp_path, monkeypatch):
+    release = updater.ReleaseInfo(
+        tag="v1.2.3", version="1.2.3", notes="", html_url="u",
+        installer_url="http://x/setup.exe", installer_name="LiquidMemoWidget-Setup-v1.2.3.exe",
+        installer_size=0,
+    )
+    calls = {"n": 0}
+
+    def flaky_once(release, dest, progress):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("connection reset")
+        dest.write_bytes(b"x" * 2_000_000)
+        return 2_000_000, 2_000_000
+
+    monkeypatch.setattr(updater, "_download_once", flaky_once)
+    monkeypatch.setattr(updater, "verify_installer_checksum", lambda *_a: False)
+    monkeypatch.setattr(updater.time, "sleep", lambda _s: None)
+    path = updater.download_installer(release, progress=None)
+    assert calls["n"] == 2 and path.read_bytes() == b"x" * 2_000_000
+    path.unlink()
+
+
+def test_download_installer_raises_after_final_failure(tmp_path, monkeypatch):
+    release = updater.ReleaseInfo(
+        tag="v1.2.3", version="1.2.3", notes="", html_url="u",
+        installer_url="http://x/setup.exe", installer_name="LiquidMemoWidget-Setup-v1.2.3.exe",
+        installer_size=0,
+    )
+    calls = {"n": 0}
+
+    def always_fail(release, dest, progress):
+        calls["n"] += 1
+        raise OSError("down")
+
+    monkeypatch.setattr(updater, "_download_once", always_fail)
+    monkeypatch.setattr(updater.time, "sleep", lambda _s: None)
+    with pytest.raises(OSError):
+        updater.download_installer(release)
+    assert calls["n"] == updater._DOWNLOAD_ATTEMPTS

@@ -1,16 +1,16 @@
 <div align="center">
 
-# 🪟 Liquid Memo Widget · 液态玻璃桌面备忘
+# 🪟 Liquid Memo Widget · 桌面备忘小组件
 
-**Windows 11 上的半透明磨砂质感桌面待办小组件**
+**Windows 11 上的半透明质感桌面待办小组件**
 
-半透明磨砂玻璃（或自定义图片背景）悬浮于桌面，集待办、截止日期、日历订阅于一体。
+磨砂玻璃、灵动水墨或自定义图片皮肤悬浮于桌面，集待办、截止日期、日历订阅、系统提醒于一体。
 
 中文 · [English](README.en.md)
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D6?logo=windows11&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
-![Render](https://img.shields.io/badge/render-DWM%20Acrylic%20%2B%20Qt-5C2D91)
+![Render](https://img.shields.io/badge/render-DWM%20Acrylic%20%2B%20InkWash%20%2B%20Qt-5C2D91)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -21,10 +21,9 @@
 
 ### 🎨 视觉
 - **磨砂玻璃皮肤（默认）**：基于 Windows 自带 DWM 亚克力（Acrylic）效果的半透明磨砂表面，省性能、文字清晰，无需 GPU 截屏。
+- **灵动水墨皮肤**：动态水墨流体背景，随光标流动；提供青花 · 蓝 / 暖玉 · 暖 / 黛粉 · 粉 三套水墨主题，界面随之染色，可在 设置 → 外观 中选择。
 - **图片背景皮肤**：上传并裁切一张图片作为静态背景皮肤，可在设置中随时切换。
 - **可调窗口色调**：在设置中调节磨砂玻璃的低饱和背景染色，并自定义待办 / 加急文字颜色。
-
-> 早期版本曾提供实时「液态玻璃」D3D11 折射皮肤（截取并折射桌面背景）。因 bug 较多且体积偏大，该皮肤已移除。
 
 ### ✅ 待办
 - **待办为核心**：快速添加、勾选完成，完成项可归档或原地淡化（设置中可选）。
@@ -36,8 +35,13 @@
 - **ICS / webcal 订阅**：在设置中填入订阅链接，自动同步未来若干天（默认 7 天、最多 30 天）的日程，单独显示在「日程」分组。
 - **离线缓存**：上次同步结果会持久化，断网重启仍可查看；已勾选的日程跨次同步保持记忆（淡化 + 删除线）。
 
+### ⏰ 系统提醒
+- **截止提醒**：临近待办截止或日程开始时弹出 Windows 系统通知，提前分钟数可调（全天日程固定当天上午 9 点提醒）。
+- **临期高亮**：待办截止或日程开始前 N 天（可调，默认 1 天）时间显示为橙色，逾期红色高亮。
+
 ### 🖱️ 桌面交互
 - **三种显示模式**：普通悬浮、贴边滑动隐藏，或动画悬浮图标；点击图标展开备忘录，移开后自动收回。
+- **拖拽调整大小**：按住窗口左下角或右下角拖动即可调整大小；手动尺寸会被记住，「展开全部 / 收起」恢复自动适配。
 - **点击穿透**：半透明区域的点击会穿透到桌面，仅在复选框、按钮等控件上响应，不影响正常使用桌面。
 - **原生拖动**：`⋮⋮` 移动窗口；悬浮图标可自由拖动并记忆位置。
 - **全局滚轮滚动**：内容超出时可用滚轮浏览。
@@ -112,6 +116,6 @@ pythonw .\RunLiquidMemoWidget.pyw    # pythonw 不弹出控制台窗口
 
 ## 🙏 致谢
 
-早期版本的实时液态玻璃皮肤改编自 [ai12989757/WindowsLiquidGlass](https://github.com/ai12989757/WindowsLiquidGlass)（MIT 许可）的 D3D11 渲染核心。该皮肤及其引擎现已移除，相关第三方代码不再随项目分发。
+「灵动水墨」背景的流体算法改编自 [PavelDoGreat/WebGL-Fluid-Simulation](https://github.com/PavelDoGreat/WebGL-Fluid-Simulation)（MIT 许可）与 Jos Stam 的 *Stable Fluids*（SIGGRAPH 1999），着色器为面向 OpenGL 3.3 Core / PySide6 的全新实现。
 
 详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

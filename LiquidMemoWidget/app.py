@@ -16,6 +16,7 @@ from PySide6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRect,
+    QSize,
     QThreadPool,
     Qt,
     QTimer,
@@ -2282,10 +2283,12 @@ class LiquidMemoApp:
         # animation, proper icon/text metrics) instead of a hand-styled QMenu. No parent: it is
         # a top-level popup, and a deleted parent would take its view down with it.
         menu = RoundMenu()
-        menu.setItemHeight(46)
-        # Delegate text comes from the view's font; match the app's serif/CJK stack.
-        menu.view.setFont(mixed_font_px(18))
-        menu.view.setMinimumWidth(240)
+        menu.setItemHeight(54)
+        # Delegate text comes from the view's font; match the app's serif/CJK stack. Icons scale
+        # via the view's iconSize (the library default 14px reads tiny next to an 22px font).
+        menu.view.setFont(mixed_font_px(22))
+        menu.view.setIconSize(QSize(24, 24))
+        menu.view.setMinimumWidth(272)
         menu.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         ink = getattr(self, "ink", None)
         theme = ink.theme if getattr(ink, "active", False) else None

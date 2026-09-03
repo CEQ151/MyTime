@@ -76,7 +76,6 @@ from window_layer import (
     begin_system_move,
     detach_from_parent,
     set_capture_exclusion,
-    set_hit_testable_layered,
     set_rounded_corners,
     set_topmost,
     protect_window_from_capture,
@@ -1236,12 +1235,6 @@ class MemoWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Qt's WA_TranslucentBackground windows carry WS_EX_LAYERED in per-pixel mode, where
-        # fully transparent pixels (the whole empty surface of the frost/image skins) pass the
-        # mouse to the desktop before our NCHITTEST handler runs — that was why drag-resize
-        # "only worked in ink" (the GL surface paints every pixel opaque). LWA_ALPHA=255 flips
-        # hit-testing to the full rect without touching the DWM-composited translucency.
-        set_hit_testable_layered(int(self.winId()))
         # Only spin the swirl when it is the active surface — with another skin selected the
         # ink widget stays allocated but hidden.
         if self._ink_bg is not None and self._active_skin_kind == "ink":
@@ -1299,6 +1292,16 @@ class MemoWindow(QWidget):
                 return
             QTimer.singleShot(0, self.protect_content_layer)
             self.app.save_later()
+
+    def paintEvent(self, event) -> None:
+        # Layered translucent windows hit-test per-pixel (UpdateLayeredWindow): fully transparent
+        # pixels pass the mouse to the desktop before WM_NCHITTEST runs, which killed the resize
+        # hot zones on every skin except ink (its GL surface paints every pixel opaque). Fill the
+        # window with 1/255 alpha so the whole rect is hit-testable — visually imperceptible, and
+        # the DWM frost still shows through beneath.
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        super().paintEvent(event)
 
     def resizeEvent(self, event) -> None:
         # The container fills the window; the image layer (a sibling child) tracks it too so the
@@ -2284,18 +2287,18 @@ class LiquidMemoApp:
         # a top-level popup, and a deleted parent would take its view down with it.
         menu = RoundMenu()
         menu.setItemHeight(54)
-        # Delegate text comes from the view's font; match the app's serif/CJK stack. Icons scale
-        # via the view's iconSize (the library default 14px reads tiny next to an 22px font).
+        # The library's menu.qss hardcodes `font: 14px` on the view, which beats setFont — set
+        # the app font through the same selector instead. Icons scale via the view's iconSize.
         menu.view.setFont(mixed_font_px(22))
-        menu.view.setIconSize(QSize(24, 24))
-        menu.view.setMinimumWidth(272)
-        menu.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        font_qss = f"MenuActionListWidget {{ font: 22px 'Times New Roman','Microsoft YaHei','Segoe UI Emoji'; }}"
         ink = getattr(self, "ink", None)
         theme = ink.theme if getattr(ink, "active", False) else None
         if theme:
-            menu.view.setStyleSheet(
-                f"MenuActionListWidget {{ background-color: {theme.popup_bg}; border-radius: 8px; }}"
-            )
+            font_qss += f" MenuActionListWidget {{ background-color: {theme.popup_bg}; border-radius: 8px; }}"
+        menu.view.setStyleSheet(font_qss)
+        menu.view.setIconSize(QSize(24, 24))
+        menu.view.setMinimumWidth(272)
+        menu.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._add_tray_action(menu, FluentIcon.SETTING, "设置", self.show_settings)
         self._add_tray_action(menu, FluentIcon.HISTORY, "历史记录", self.show_history)
         menu.addSeparator()

@@ -18,6 +18,7 @@ from qfluentwidgets import (
     TransparentToolButton,
     setCustomStyleSheet,
 )
+from qfluentwidgets.components.widgets.switch_button import Indicator, IndicatorPosition, SwitchButton
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -160,6 +161,51 @@ def enlarge_control_font(widget: QWidget, px: int = SETTING_CONTROL_FONT_PX) -> 
     widget.setMinimumHeight(max(widget.minimumHeight(), round(px * 2.3)))
 
 
+class LargeSwitchIndicator(Indicator):
+    """qfluentwidgets paints its 42x22 pill with hardcoded geometry (circle at y=5, 12px
+    diameter, slider travel 5→25), so font scaling can't grow it. Redraw everything at 2x."""
+
+    INDICATOR_W, INDICATOR_H = 84, 44
+    CIRCLE_D = 24
+    MARGIN = 10  # unchecked/checked pill inset: x = 10 / 50 (50 + 24 + 10 = 84)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self.INDICATOR_W, self.INDICATOR_H)
+
+    def _toggleSlider(self):
+        # Property sliderX keeps the base class's 5→25 range (its setter clamps min at 5);
+        # paint maps it linearly onto the large pill: x_px = sliderX * 2.
+        self.slideAni.setEndValue(25 if self.isChecked() else 5)
+        self.slideAni.start()
+
+    def _drawCircle(self, painter: QPainter):
+        # This override REPLACES the base method, so it must redo its pen/brush setup —
+        # the state left by _drawBackground is the teal pill fill (an invisible knob).
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._sliderColor())
+        painter.drawEllipse(int(self.sliderX) * 2, self.MARGIN, self.CIRCLE_D, self.CIRCLE_D)
+
+
+class LargeSwitchButton(SwitchButton):
+    """SwitchButton with the 2x indicator swapped in, keeping the whole-widget click-to-toggle,
+    On/Off label and checkedChanged signal of the original."""
+
+    def __init__(self, parent: QWidget | None = None, indicatorPos: IndicatorPosition = IndicatorPosition.LEFT) -> None:
+        super().__init__(parent, indicatorPos)
+        old = self.indicator
+        checked = old.isChecked()
+        self.indicator = LargeSwitchIndicator(self)
+        self.indicator.setChecked(checked)
+        # Re-wire what __initWidget had connected to the stock indicator.
+        self.indicator.toggled.connect(self._updateText)
+        self.indicator.toggled.connect(self.checkedChanged)
+        self.hBox.insertWidget(self.hBox.indexOf(old), self.indicator)
+        self.hBox.removeWidget(old)
+        old.deleteLater()
+        self.setFixedHeight(LargeSwitchIndicator.INDICATOR_H)
+
+
 def set_label_font(label: QWidget, px: int, weight: QFont.Weight = QFont.Normal, color: str | None = None) -> None:
     # Force a fluent label (TitleLabel/BodyLabel) to a specific pixel size and weight. These
     # labels carry their own bold QSS, so — like enlarge_control_font — the class-name custom
@@ -186,15 +232,59 @@ class LargeColorDialog(ColorDialog):
 
     def _relayout_large(self) -> None:
         family = "'Times New Roman','Microsoft YaHei','Segoe UI Emoji'"
-        # 窗口级样式表优先于库的应用级 QSS（后者把 titleLabel 定为 19px、按钮/输入框 14px）
+        # The stock dialog follows qfluentwidgets' own theme — driven by a global config this
+        # app never sets, so it can render as a black panel that clashes with the light UI.
+        # Pin an explicit light palette + app typography on the dialog; widget-level rules
+        # always beat the library's application-level QSS.
         self.setStyleSheet(
             f"""
-            #titleLabel {{ font: 30px {family}; }}
-            QLabel {{ font: 24px {family}; }}
-            #prefixLabel {{ font: 20px {family}; }}
-            LineEdit {{ font: 22px {family}; }}
-            PrimaryPushButton {{ font: 24px {family}; }}
-            QPushButton {{ font: 24px {family}; }}
+            #centerWidget {{ background: #fbfcfe; border-radius: 14px; }}
+            #titleLabel {{ font: 30px {family}; color: #111820; }}
+            QLabel {{ font: 24px {family}; color: #2a3644; background: transparent; }}
+            #prefixLabel {{ font: 20px {family}; color: #7c8794; }}
+            LineEdit {{
+                font: 22px {family}; color: #111820;
+                background: rgba(255,255,255,235);
+                border: 1px solid rgba(20,30,40,55); border-radius: 10px;
+            }}
+            PrimaryPushButton {{
+                font: 24px {family}; color: white; background: #e85d93;
+                border: none; border-radius: 10px;
+            }}
+            PrimaryPushButton:hover {{ background: #d94f86; }}
+            QPushButton {{
+                font: 24px {family}; color: #2a3644; background: #ffffff;
+                border: 1px solid rgba(20,30,40,55); border-radius: 10px;
+            }}
+            QPushButton:hover {{ background: #f4f6f9; }}
+            """
+        )
+        # Localize the stock English labels.
+        self.editLabel.setText("编辑颜色")
+        self.redLabel.setText("红 R")
+        self.greenLabel.setText("绿 G")
+        self.blueLabel.setText("蓝 B")
+        self.yesButton.setText("确定")
+        self.cancelButton.setText("取消")
+        # Direct per-widget sheets: qfluentwidgets applies its own theme sheet ON the button
+        # itself, which outranks any ancestor stylesheet — the only way to win is to replace
+        # the widget's own sheet. The center panel must be opaque here because the mask dialog
+        # dims everything behind it (dark when the system app theme is dark).
+        self.widget.setStyleSheet(
+            "#centerWidget { background: #fbfcfe; border: 1px solid rgba(20,30,40,45); border-radius: 14px; }"
+        )
+        self.scrollWidget.setStyleSheet("background: #fbfcfe;")
+        self.scrollArea.setStyleSheet("background: #fbfcfe; border: none;")
+        self.scrollArea.viewport().setStyleSheet("background: #fbfcfe;")
+        self.yesButton.setStyleSheet(
+            f"""
+            PrimaryPushButton {{
+                {FONT_STACK_QSS}
+                font-size: 24px; color: white; background: #e85d93;
+                border: none; border-radius: 10px;
+            }}
+            PrimaryPushButton:hover {{ background: #d94f86; }}
+            PrimaryPushButton:pressed {{ background: #c7477a; }}
             """
         )
         widget = self.widget

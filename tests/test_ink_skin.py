@@ -68,14 +68,17 @@ def test_make_skin_resolves_ink_without_any_unlock_state(qapp):
 
 
 def test_ink_mode_reserves_a_readable_memo_width(qapp):
-    from app import INK_MIN_WIDTH, MemoWindow
+    # MIN_WIDTH is derived from row_fixed_chrome (≥ INK_MIN_WIDTH since the ❗-clipping fix):
+    # the empty-view floor is the derived MIN_WIDTH for every skin now.
+    from app import MIN_WIDTH, MemoWindow
 
     memo = SimpleNamespace(app=None, skin=SimpleNamespace(kind="ink"))
 
-    assert MemoWindow._adaptive_width(memo, [], [], QRect(0, 0, 1920, 1080)) == INK_MIN_WIDTH
+    assert MemoWindow._adaptive_width(memo, [], [], QRect(0, 0, 1920, 1080)) == MIN_WIDTH
+    assert MIN_WIDTH > 400  # widest row shape (DDL + ❗ + ✎ + subtask toggle/badge) must fit
 
     memo.skin = SimpleNamespace(kind="acrylic")
-    assert MemoWindow._adaptive_width(memo, [], [], QRect(0, 0, 1920, 1080)) == 320
+    assert MemoWindow._adaptive_width(memo, [], [], QRect(0, 0, 1920, 1080)) == MIN_WIDTH
 
 
 def test_swirl_fallback_set_theme_recolours_in_place(qapp):

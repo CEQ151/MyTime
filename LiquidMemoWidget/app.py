@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -22,10 +24,11 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPixmap
+from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -33,9 +36,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -58,7 +63,23 @@ from qfluentwidgets import (
 )
 
 from skin_editor import load_skin_pixmap, mean_luminance as image_mean_luminance
-from state_store import CalendarEvent, Settings, StateStore, TodoItem, deadline_alert, parse_ddl, utc_now
+from state_store import (
+    CalendarEvent,
+    Settings,
+    StateStore,
+    SubTask,
+    TodoItem,
+    deadline_alert,
+    parse_ddl,
+    utc_now,
+)
+from recurrence import (
+    RECUR_CHOICES,
+    apply_recurrence_on_complete,
+    next_occurrence,
+    parse_recur,
+    recur_label,
+)
 from wheel_hook import GlobalWheelHook
 from window_layer import (
     HTBOTTOM,
@@ -111,8 +132,8 @@ from ink_swirl import swirl_tokens
 from ink_background import make_ink_background
 
 
-MIN_WIDTH = 320
-MAX_WIDTH = 720
+# MIN_WIDTH is derived below, once row_fixed_chrome and the DDL column constants exist —
+# the old fixed 320 let a narrow window clip the trailing ❗ / ✎ buttons.
 MAX_WIDTH_RATIO = 0.52
 MIN_HEIGHT = 320
 MAX_HEIGHT_RATIO = 0.7
@@ -149,6 +170,26 @@ DDL_COL_PAD = 6
 DDL_SEP_WIDTH = 1
 # Two extra HBox gaps (text↔separator and separator↔ddl) at the layout's 10px spacing.
 DDL_COL_GAPS = 20
+
+ROW_MIN_TEXT = 90  # the title column never shrinks below this; it elides past it
+
+
+def row_fixed_chrome(ddl_reserve: int = 0, has_subtasks: bool = False) -> int:
+    """Horizontal pixels a TodoRow needs besides its (elided) title. One authoritative count:
+    window side padding (OUTER_X*2), the row's own margins (6*2) and 5 inter-item spacings
+    (10), checkbox 24, edit ✎ 30, urgent ❗ 30, the DDL column reserve, and — when the todo
+    has subtasks — the ▾ toggle (20) plus a spacing and the n/m badge (~34) plus a spacing.
+    The old hand-counted reserves in _adaptive_width/_text_width_for_window disagreed with
+    this by ~70px, which pushed the trailing ❗ out of the window at small widths."""
+    base = OUTER_X * 2 + 12 + 50 + 24 + 30 + 30 + ddl_reserve
+    return base + (74 if has_subtasks else 0)
+
+
+# The narrowest window must still show every part of the widest row shape (DDL column shown,
+# subtask toggle + badge present) with at least ROW_MIN_TEXT of title: otherwise some window
+# size could always clip the trailing ❗ / ✎ buttons.
+MIN_WIDTH = row_fixed_chrome(DDL_COL_MIN + DDL_SEP_WIDTH + DDL_COL_GAPS, True) + ROW_MIN_TEXT
+MAX_WIDTH = 720
 # Deadline highlighting: a parsed DDL already past "now" turns red; one due within the
 # user-configured nearHighlightDays turns amber. Unparseable or done items stay normal.
 DDL_OVERDUE_COLOR = "#FF3B30"
@@ -198,6 +239,108 @@ def location_line_height() -> int:
     """Extra height a row gains from its dim second '📍 location' line (the 10pt label plus the
     2px text-column spacing). Shared by row layout and the window height pre-calc so they agree."""
     return QFontMetrics(mixed_font(10)).height() + 2
+
+
+def subtask_line_height() -> int:
+    """Height one indented subtask row adds to its parent row (small check + 10pt label + gap)."""
+    return QFontMetrics(mixed_font(10)).height() + 5
+
+
+SUBTASK_INDENT = 30
+# Small round ordering/delete buttons inside the editor's subtask rows.
+SUBTASK_BTN_SIZE = 24
+
+
+def recur_hint_text(todo: "TodoItem") -> str:
+    """Tooltip for a row's 🔄 recurrence marker: label, last completion, next occurrence."""
+    parts = [recur_label(todo.recur)]
+    if todo.lastDoneAt:
+        try:
+            parts.append("上次完成 " + datetime.fromisoformat(todo.lastDoneAt).strftime("%m-%d %H:%M"))
+        except ValueError:
+            pass
+    ddl_dt = parse_ddl(todo.ddl or "")
+    now = datetime.now()
+    if ddl_dt is not None and ddl_dt < now:
+        nxt = next_occurrence(todo.recur, ddl_dt, todo.recurAnchor, now)
+        if nxt is not None:
+            parts.append(f"完成后将排到 {nxt.strftime('%m-%d %H:%M')}")
+    return " · ".join(parts)
+
+
+def todo_extra_height(todo: "TodoItem") -> int:
+    """Vertical space a todo's subtask block and recurrence line add below its title/location,
+    mirrored by TodoRow.apply_text_width and the window height pre-calc."""
+    extra = 0
+    if todo.subtasks and not todo.subtasksCollapsed:
+        extra += len(todo.subtasks) * subtask_line_height() + 2
+    if parse_recur(todo.recur) not in (None, "none"):
+        extra += location_line_height()
+    return extra
+
+
+def details_rich_text(text: str) -> str:
+    """Markdown details -> inline-styled HTML for QLabel rich text (same pipeline spirit as
+    update_ui.add_notes: QTextDocument markdown export with our typography injected)."""
+    # Only # / ## headings are supported: deeper levels are demoted to bold lines so the
+    # popup's hierarchy stays two levels tall.
+    lines = []
+    for line in (text or "").splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("###"):
+            line = line[: len(line) - len(stripped)] + "**" + stripped.lstrip("#").strip() + "**"
+        lines.append(line)
+    doc = QTextDocument()
+    doc.setMarkdown("\n".join(lines).strip() or "_（无细节）_")
+    rich = doc.toHtml()
+    # pt, not px: px in rich text is a device pixel and ignores Windows DPI scaling, so on a
+    # scaled display the popup text rendered smaller than the (pt-sized) row text no matter
+    # the number. pt tracks the same scaling as every other widget font in the app.
+    body_style = " font-family:'Times New Roman','Microsoft YaHei','Segoe UI Emoji'; font-size:13pt; font-weight:400;"
+    rich = re.sub(r'<body style="[^"]*"', f'<body style="{body_style}"', rich)
+    # QTextDocument exports xx-large heading sizes that dwarf the 13pt body; pin both levels.
+    rich = re.sub(r'(<h1 style="[^"]*?)font-size:[^;\"]*', r"\1font-size:17pt", rich)
+    rich = re.sub(r'(<h2 style="[^"]*?)font-size:[^;\"]*', r"\1font-size:15pt", rich)
+    return rich
+
+
+def details_html_height(html: str, width: int, font: QFont) -> int:
+    """Measured wrapped height of the details HTML at ``width``. QLabel.heightForWidth
+    returns -1 for rich text, and its sizeHint is the unwrapped one-line height — measuring
+    through a QTextDocument is the only reliable number for the hover popup."""
+    doc = QTextDocument()
+    doc.setDefaultFont(font)
+    doc.setHtml(html)
+    doc.setTextWidth(max(60, width))
+    return round(doc.size().height())
+
+
+# 18px check indicator shared by a row's subtask lines (and the preview popup's list).
+SUB_CHECK_QSS = """    QCheckBox::indicator {
+        width: 18px; height: 18px; border-radius: 5px;
+        border: 1px solid rgba(25,35,45,120); background: rgba(255,255,255,90);
+    }
+    QCheckBox::indicator:hover { background: rgba(255,255,255,150); }
+    QCheckBox::indicator:checked { background: #111820; image: none; }
+"""
+
+
+class SubTaskLabel(QLabel):
+    """One subtask's text label. Accepts its own mouse events so a press on the checklist never
+    reaches the parent TodoRow's drag-reorder path; a plain left click toggles `check_target`."""
+
+    def __init__(self, text: str, check_target: QCheckBox | None = None) -> None:
+        super().__init__(text)
+        self.check_target = check_target
+        self.setTextFormat(Qt.PlainText)
+
+    def mousePressEvent(self, event) -> None:
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.check_target is not None:
+            self.check_target.click()
+        event.accept()
 
 
 _text_measure_label: QLabel | None = None
@@ -342,6 +485,9 @@ class TodoRow(QFrame):
         self._zone_press = False
         self._style_signature: tuple[str, bool, bool, str] | None = None
         self._halo: QGraphicsDropShadowEffect | None = None
+        self._preview_timer: QTimer | None = None
+        self._flash_active = False
+        self._sub_labels: list[QLabel] = []
         self.setMinimumHeight(ROW_HEIGHT)
         self.setObjectName("todoRow")
         self.setCursor(Qt.OpenHandCursor)
@@ -356,6 +502,7 @@ class TodoRow(QFrame):
                 border-bottom: 1px solid rgba(255,255,255,72);
             }}
             QFrame#todoRow:hover {{ background: rgba(255,255,255,35); }}
+            QFrame#todoRow[flash="true"] {{ background: rgba(45,184,130,80); }}
             """
         )
 
@@ -385,6 +532,30 @@ class TodoRow(QFrame):
         self.checkbox.stateChanged.connect(self._complete_changed)
         layout.addWidget(self.checkbox)
 
+        # 子任务折叠开关 + 进度徽标: only present when the todo has subtasks. Collapsed rows show
+        # an n/m (or ✓) count badge; expanded rows show the indented checklist under the title.
+        self.sub_toggle = QPushButton("▾")
+        self.sub_toggle.setFixedSize(20, 20)
+        self.sub_toggle.setCursor(Qt.PointingHandCursor)
+        self.sub_toggle.setToolTip("展开/收起子任务")
+        self.sub_toggle.setStyleSheet(
+            """
+            QPushButton {
+                border: none; border-radius: 10px; background: rgba(255,255,255,45);
+                font-size: 11px; color: rgba(17,24,32,200); padding: 0;
+            }
+            QPushButton:hover { background: rgba(255,255,255,115); }
+            """
+        )
+        self.sub_toggle.clicked.connect(self._toggle_collapsed)
+        self.sub_toggle.setVisible(False)
+        layout.addWidget(self.sub_toggle)
+
+        self.sub_badge = QLabel("")
+        self.sub_badge.setFont(mixed_font(10))
+        self.sub_badge.setVisible(False)
+        layout.addWidget(self.sub_badge)
+
         self.text = TodoTextLabel(todo.text)
         self.text.setFont(mixed_font(12))
         self.text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -402,7 +573,29 @@ class TodoRow(QFrame):
         text_col.setSpacing(2)
         text_col.addWidget(self.text)
         text_col.addWidget(self.location_label)
+        # 🔄 recurrence marker line (label + last completion + next-occurrence hint in tooltip).
+        self.recur_label = TodoTextLabel("")
+        self.recur_label.setFont(mixed_font(10))
+        self.recur_label.setWordWrap(False)
+        self.recur_label.setVisible(False)
+        self.recur_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        text_col.addWidget(self.recur_label)
+        # Indented subtask checklist (hidden when collapsed or when there are no subtasks).
+        self.subtask_area = QWidget()
+        self.subtask_area.setStyleSheet("background: transparent;")
+        self.subtask_col = QVBoxLayout(self.subtask_area)
+        self.subtask_col.setContentsMargins(SUBTASK_INDENT, 2, 0, 0)
+        self.subtask_col.setSpacing(3)
+        self.subtask_area.setVisible(False)
+        text_col.addWidget(self.subtask_area)
         layout.addLayout(text_col, 1)
+
+        if parse_recur(todo.recur) not in (None, "none"):
+            self.recur_label.set_full_text(f"🔄 {recur_label(todo.recur)}")
+            self.recur_label.setVisible(True)
+            self.recur_label.setToolTip(recur_hint_text(todo))
+            install_tooltip(self.recur_label)
+        self._rebuild_subtask_rows()
 
         # DDL column: solid vertical separator + deadline label. Both stay hidden until the
         # layout pass (apply_text_width) decides the column should be shown for this view.
@@ -531,13 +724,167 @@ class TodoRow(QFrame):
             self.location_label.set_full_text(f"📍 {loc}")
             self.location_label.setText(loc_metrics.elidedText(f"📍 {loc}", Qt.ElideRight, text_width))
         self.location_label.setVisible(bool(loc))
+        if self.recur_label.isVisible():
+            self.recur_label.setFixedWidth(text_width)
+            metrics10 = QFontMetrics(self.recur_label.font())
+            full = f"🔄 {recur_label(self.todo.recur)}"
+            self.recur_label.set_full_text(full)
+            self.recur_label.setText(metrics10.elidedText(full, Qt.ElideRight, text_width))
+        sub_width = max(60, text_width - SUBTASK_INDENT)
+        sub_metrics = QFontMetrics(mixed_font(10))
+        for label, sub in zip(self._sub_labels, self.todo.subtasks):
+            label.setFixedWidth(sub_width)
+            label.setText(sub_metrics.elidedText(sub.text, Qt.ElideRight, sub_width))
         height = wrapped_text_height(self.text.text(), text_width) + (location_line_height() if loc else 0)
+        height += todo_extra_height(self.todo)
         height = max(ROW_HEIGHT, height + 18)
         self.setFixedHeight(height)
         return height
 
     def _complete_changed(self) -> None:
         self.parent_window.complete_todo(self.todo.id, self.checkbox.isChecked(), self)
+
+    # ── Subtask checklist rendering ──────────────────────────────────────────────────────
+    def _subtasks_visible(self) -> bool:
+        return bool(self.todo.subtasks) and not self.todo.subtasksCollapsed
+
+    def _rebuild_subtask_rows(self) -> None:
+        """Rebuild the indented subtask checklist from todo.subtasks and sync the toggle/badge."""
+        while self.subtask_col.count():
+            item = self.subtask_col.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._sub_labels = []
+        color = "rgba(17,24,32,175)"
+        for sub in self.todo.subtasks:
+            row = QWidget(self.subtask_area)
+            row.setStyleSheet("background: transparent;")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+            check = QCheckBox()
+            check.setChecked(sub.done)
+            check.setStyleSheet(SUB_CHECK_QSS)
+            check.setCursor(Qt.PointingHandCursor)
+            check.setToolTip(sub.text)
+            check.toggled.connect(
+                lambda checked, sub_id=sub.id: self.parent_window.complete_subtask(self.todo.id, sub_id, checked)
+            )
+            h.addWidget(check)
+            label = SubTaskLabel("", check)
+            label.setFont(mixed_font(10))
+            label.setStyleSheet(f"{FONT_STACK_QSS} font-size: 10pt; color: {color};")
+            label.setCursor(Qt.PointingHandCursor)
+            self._sub_labels.append(label)
+            h.addWidget(label, 1)
+            self.subtask_col.addWidget(row)
+        has_subs = bool(self.todo.subtasks)
+        self.subtask_area.setVisible(self._subtasks_visible())
+        self.sub_toggle.setVisible(has_subs)
+        self.sub_toggle.setText("▾" if self._subtasks_visible() else "▸")
+        if has_subs and self.todo.subtasksCollapsed:
+            done = sum(1 for sub in self.todo.subtasks if sub.done)
+            total = len(self.todo.subtasks)
+            self.sub_badge.setText("✓" if done == total else f"{done}/{total}")
+            self.sub_badge.setVisible(True)
+        elif not self._flash_active:
+            self.sub_badge.setVisible(False)
+
+    def refresh_subtask_state(self) -> None:
+        """Targeted in-place update (no row rebuild): re-check boxes/badge against todo state."""
+        checks = self.subtask_area.findChildren(QCheckBox)
+        for check, sub in zip(checks, self.todo.subtasks):
+            check.blockSignals(True)
+            check.setChecked(sub.done)
+            check.blockSignals(False)
+        if self.todo.subtasks and self.todo.subtasksCollapsed:
+            done = sum(1 for sub in self.todo.subtasks if sub.done)
+            total = len(self.todo.subtasks)
+            self.sub_badge.setText("✓" if done == total else f"{done}/{total}")
+            self.sub_badge.setVisible(True)
+        elif not self._flash_active:
+            self.sub_badge.setVisible(False)
+
+    def _toggle_collapsed(self) -> None:
+        toggle = getattr(self.parent_window, "toggle_subtasks_collapsed", None)
+        if callable(toggle):
+            toggle(self.todo.id)
+
+    def flash_completion(self) -> None:
+        """Brief green highlight + transient hint when the last open subtask was checked."""
+        if self._flash_active:
+            return
+        self._flash_active = True
+        self.sub_badge.setText("✓ 已完成")
+        self.sub_badge.setVisible(True)
+        self.setProperty("flash", True)
+        self._repolish()
+        # Child timer: dies with the row, so a pending flash can never fire on a deleted row.
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._end_flash)
+        self._flash_timer.start(1200)
+
+    def _end_flash(self) -> None:
+        self._flash_active = False
+        self.setProperty("flash", False)
+        self._repolish()
+        self.refresh_subtask_state()
+
+    def _repolish(self) -> None:
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+
+    # ── Hover details preview (DetailsPopup) ─────────────────────────────────────────────
+    def _cancel_preview(self) -> None:
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+            self._preview_timer = None
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        # Returning to the row while the preview is up (within its close grace period) keeps
+        # it open instead of blinking out and re-arming the 1.0s timer.
+        # The popup lives on the MemoWindow, not the row — reaching through parent_window here
+        # (an AttributeError on self.details_popup would kill the whole hover chain silently).
+        popup = getattr(self.parent_window, "details_popup", None)
+        if popup is not None and popup.isVisible():
+            popup._cancel_close()
+        if not (self.todo.details or self.todo.subtasks) or self.todo.done:
+            return
+        show = getattr(self.parent_window, "show_details_preview", None)
+        if not callable(show):
+            return
+        self._cancel_preview()
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(lambda: show(self))
+        self._preview_timer.start(1000)
+
+    def leaveEvent(self, event) -> None:
+        self._cancel_preview()
+        hide = getattr(self.parent_window, "hide_details_preview", None)
+        if callable(hide):
+            hide()
+        super().leaveEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._cancel_preview()
+        hide = getattr(self.parent_window, "hide_details_preview", None)
+        if callable(hide):
+            hide()
+        super().hideEvent(event)
+
+    def _in_subtask_zone(self, pos: QPoint) -> bool:
+        """True when `pos` is over the indented subtask checklist block; presses there must not
+        arm the parent row's drag-reorder."""
+        if not self.subtask_area.isVisibleTo(self):
+            return False
+        top_left = self.subtask_area.mapTo(self, QPoint(0, 0))
+        zone = QRect(top_left, self.subtask_area.size())
+        return zone.adjusted(-2, -2, 2, 2).contains(pos)
 
     def _in_checkbox_zone(self, pos: QPoint) -> bool:
         zone = self.checkbox.geometry().adjusted(
@@ -551,6 +898,14 @@ class TodoRow(QFrame):
                 # Inside the checkbox's forgiveness margin: never arm the reorder drag, or a
                 # click aimed at the box tilts into a row drag before the threshold is crossed.
                 self._zone_press = True
+                self._cancel_preview()
+                event.accept()
+                return
+            if self._in_subtask_zone(event.position().toPoint()):
+                # Presses over the subtask checklist must never drag-reorder the parent row.
+                self._zone_press = False
+                self._drag_start = None
+                self._cancel_preview()
                 event.accept()
                 return
             self._zone_press = False
@@ -737,6 +1092,184 @@ class CalendarRow(QFrame):
         self.parent_window.toggle_calendar_event(self.cal_event.key, self.checkbox.isChecked())
 
 
+class DetailsPopup(QDialog):
+    """Frameless hover preview of a todo's details + subtasks, styled like the editor panel.
+    Shown by TodoRow's 1.0s hover timer; any leave (row or popup) closes it immediately."""
+
+    def __init__(self, parent_window: "MemoWindow") -> None:
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.parent_window = parent_window
+        self._todo_id: str | None = None
+        self._sub_checks: dict[str, QCheckBox] = {}
+        self._close_timer: QTimer | None = None
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle("事件细节")
+        self.panel = QFrame(self)
+        self.panel.setObjectName("detailsPanel")
+        self.panel.setStyleSheet(self._panel_qss(None))
+        outer = QVBoxLayout(self.panel)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(8)
+        # Long markdown details overflow the 60%-screen height cap, so the content lives in a
+        # transparent scroll area — the popup never clips text, tall ones just scroll.
+        self.scroll = QScrollArea(self.panel)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # Slim but VISIBLE scrollbar: a hidden one gave no hint that long details continue
+        # below the fold, so the popup looked like it silently truncated the markdown.
+        self.scroll.setStyleSheet(
+            """
+            QScrollArea { background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 4px 2px 4px 0; }
+            QScrollBar::handle:vertical { background: rgba(17,24,32,70); border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgba(17,24,32,120); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            """
+        )
+        outer.addWidget(self.scroll)
+        self.content = QWidget()
+        self.content.setStyleSheet("background: transparent;")
+        self.scroll.setWidget(self.content)
+        content_lay = QVBoxLayout(self.content)
+        content_lay.setContentsMargins(0, 0, 0, 0)
+        content_lay.setSpacing(8)
+        self.title = QLabel("事件细节")
+        self.title.setStyleSheet(f"{FONT_STACK_QSS} font-size: 14px; font-weight: 700; color: #111820;")
+        self.title.setVisible(False)
+        content_lay.addWidget(self.title)
+        self.body = QLabel()
+        self.body.setTextFormat(Qt.RichText)
+        self.body.setWordWrap(True)
+        self.body.setOpenExternalLinks(True)
+        self.body.setTextInteractionFlags(Qt.TextBrowserInteraction | Qt.LinksAccessibleByMouse)
+        self.body.setStyleSheet(f"{FONT_STACK_QSS} color: #111820; background: transparent;")
+        content_lay.addWidget(self.body)
+        self.sub_area = QWidget()
+        self.sub_area.setStyleSheet("background: transparent;")
+        self.sub_col = QVBoxLayout(self.sub_area)
+        self.sub_col.setContentsMargins(0, 2, 0, 0)
+        self.sub_col.setSpacing(5)
+        content_lay.addWidget(self.sub_area)
+        ink = getattr(getattr(parent_window, "app", None), "ink", None)
+        self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
+
+    @staticmethod
+    def _panel_qss(theme: "InkTheme | None") -> str:
+        background = css_rgba(qcolor(theme.popup_bg), 0.96) if theme else "rgba(248,252,255,242)"
+        return (
+            f"QFrame#detailsPanel {{ {FONT_STACK_QSS} border-radius: 22px;"
+            f" border: 1px solid rgba(255,255,255,170); background: {background}; }}"
+            f" QCheckBox {{ {FONT_STACK_QSS} color: #111820; font-size: 13px; }}"
+            f" QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px;"
+            f" border: 1px solid rgba(25,35,45,120); background: rgba(255,255,255,190); }}"
+            f" QCheckBox::indicator:checked {{ background: #111820; image: none; }}"
+        )
+
+    def apply_ink_theme(self, theme: "InkTheme | None") -> None:
+        self.panel.setStyleSheet(self._panel_qss(theme))
+
+    def _render(self, todo: TodoItem) -> None:
+        self._todo_id = todo.id
+        has_details, has_subs = bool(todo.details.strip()), bool(todo.subtasks)
+        self.title.setVisible(has_details and has_subs)
+        self.body.setText(details_rich_text(todo.details) if has_details else "")
+        self.body.setVisible(has_details)
+        while self.sub_col.count():
+            item = self.sub_col.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._sub_checks = {}
+        for sub in todo.subtasks:
+            check = QCheckBox(sub.text)
+            check.setChecked(sub.done)
+            check.setCursor(Qt.PointingHandCursor)
+            check.toggled.connect(
+                lambda checked, sub_id=sub.id: self.parent_window.complete_subtask(self._todo_id or "", sub_id, checked)
+            )
+            self._sub_checks[sub.id] = check
+            self.sub_col.addWidget(check)
+        self.sub_area.setVisible(bool(todo.subtasks))
+
+    def sync_subtask(self, todo_id: str, subtask_id: str, checked: bool) -> None:
+        """Keep the popup's checkbox in sync when a subtask toggles elsewhere (row / editor)."""
+        if self._todo_id != todo_id:
+            return
+        check = self._sub_checks.get(subtask_id)
+        if check is not None:
+            check.blockSignals(True)
+            check.setChecked(checked)
+            check.blockSignals(False)
+
+    def show_for(self, todo: TodoItem, anchor: QPoint) -> None:
+        if not (todo.details.strip() or todo.subtasks):
+            return
+        self._cancel_close()
+        self._render(todo)
+        screen = QApplication.primaryScreen().availableGeometry()
+        width = min(560, max(320, screen.width() - 24))
+        inner = width - 40  # panel margins (20 left + 20 right)
+        # Measure real content height: rich-text QLabels need heightForWidth at the actual
+        # width — sizeHint()/adjustSize() report the unwrapped one-line height and clipped
+        # the markdown to a sliver.
+        # isHidden(), not isVisible(): the dialog isn't shown yet at measure time, so
+        # isVisible() (ancestor-dependent) is always False here and everything measured 0.
+        content_height = 0
+        if not self.title.isHidden():
+            content_height += self.title.sizeHint().height() + 8
+        if not self.body.isHidden():
+            self.body.setFixedWidth(inner)
+            content_height += max(
+                details_html_height(self.body.text(), inner, self.body.font()),
+                self.body.sizeHint().height(),
+            ) + 8
+        if not self.sub_area.isHidden():
+            content_height += self.sub_area.sizeHint().height() + 2
+        height = min(max(content_height + 32, 60), int(screen.height() * 0.75))
+        self.setFixedSize(width, height)
+        self.panel.setGeometry(0, 0, width, height)
+        x = min(max(anchor.x() + 14, screen.left() + 8), screen.right() - width - 8)
+        y = min(max(anchor.y() + 14, screen.top() + 8), screen.bottom() - height - 8)
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+    def schedule_close(self, delay_ms: int = 320) -> None:
+        """Close after a short grace period instead of instantly: the popup floats a dozen
+        pixels away from the row, so moving the mouse over to it (to scroll the details) has
+        to survive the row's leave event. If the cursor is over the popup when the timer
+        fires, stay open — its own leave re-schedules the close."""
+        if not self.isVisible():
+            return
+        self._cancel_close()
+        self._close_timer = QTimer(self)
+        self._close_timer.setSingleShot(True)
+        self._close_timer.timeout.connect(self._close_if_not_hovered)
+        self._close_timer.start(delay_ms)
+
+    def _cancel_close(self) -> None:
+        if self._close_timer is not None:
+            self._close_timer.stop()
+            self._close_timer = None
+
+    def _close_if_not_hovered(self) -> None:
+        if self.isVisible() and not self.geometry().contains(QCursor.pos()):
+            self.hide()
+
+    def leaveEvent(self, event) -> None:
+        self.schedule_close()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(event)
+
+
 class TodoEditorPopup(QDialog):
     """Add or edit a todo: 内容 / 地点(可选) / DDL(可选). Shared by the "+" add flow and the
     per-row pencil edit. Qt.Tool (not Qt.Popup) so the QLineEdits reliably get keyboard focus
@@ -749,7 +1282,8 @@ class TodoEditorPopup(QDialog):
         self.setWindowTitle("添加事项")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setFixedSize(460, 132)
+        self._width = 460  # clamped base width; height grows with the expanded sections
+        self._subtask_rows: list[dict] = []
 
         self.panel = QFrame(self)
         self.panel.setObjectName("addPanel")
@@ -801,6 +1335,127 @@ class TodoEditorPopup(QDialog):
         self.ok.clicked.connect(self.accept)
         row.addWidget(self.ok)
         outer.addLayout(row)
+
+        # ── 扩展区: 细节 / 子任务 / 重复 ─────────────────────────────────────────────────
+        toggles = QHBoxLayout()
+        toggles.setContentsMargins(0, 0, 0, 0)
+        toggles.setSpacing(8)
+        self.details_toggle = self._make_chip_button("添加细节")
+        self.details_toggle.clicked.connect(self._toggle_details)
+        toggles.addWidget(self.details_toggle)
+        self.subtask_toggle = self._make_chip_button("子任务")
+        self.subtask_toggle.clicked.connect(self._toggle_subtasks)
+        toggles.addWidget(self.subtask_toggle)
+        self.recur_toggle = self._make_chip_button("重复")
+        self.recur_toggle.clicked.connect(self._toggle_recur)
+        toggles.addWidget(self.recur_toggle)
+        toggles.addStretch()
+        outer.addLayout(toggles)
+
+        self.details_edit = QPlainTextEdit()
+        self.details_edit.setPlaceholderText("记录细节，支持 Markdown 语法")
+        self.details_edit.setVisible(False)
+        self.details_edit.setFixedHeight(190)
+        self.details_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.details_edit.setStyleSheet(
+            f"""
+            QPlainTextEdit {{
+                {FONT_STACK_QSS}
+                border: 1px solid rgba(255,255,255,145);
+                border-radius: 12px;
+                background: rgba(255,255,255,150);
+                color: #111820;
+                font-size: {POPUP_INPUT_FONT_PX}px;
+                padding: 8px 12px;
+                selection-background-color: rgba(33,150,243,120);
+            }}
+            """
+        )
+        outer.addWidget(self.details_edit)
+
+        self.subtask_box = QWidget()
+        self.subtask_box.setStyleSheet("background: transparent;")
+        self.subtask_list = QVBoxLayout(self.subtask_box)
+        self.subtask_list.setContentsMargins(0, 0, 0, 0)
+        self.subtask_list.setSpacing(6)
+        self.subtask_box.setVisible(False)
+        outer.addWidget(self.subtask_box)
+
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        self.add_subtask_btn = self._make_chip_button("+ 添加子任务")
+        self.add_subtask_btn.clicked.connect(lambda: self._add_subtask_row())
+        add_row.addWidget(self.add_subtask_btn)
+        add_row.addStretch()
+        self.subtask_list.addLayout(add_row)
+
+        self.recur_box = QWidget()
+        self.recur_box.setStyleSheet("background: transparent;")
+        recur_row = QHBoxLayout(self.recur_box)
+        recur_row.setContentsMargins(0, 0, 0, 0)
+        recur_row.setSpacing(8)
+        # Plain Qt combo/spin pick up the SYSTEM palette — on a dark-mode Windows the closed
+        # control renders white-on-transparent and the pop-up list renders black, clashing with
+        # the light panel. Pin the app's light chips explicitly (incl. the item view, so the
+        # drop-down itself is light too).
+        recur_light_qss = (
+            f"""
+            QComboBox, QSpinBox {{
+                {FONT_STACK_QSS}
+                font-size: 17px; color: #2a3644;
+                background: rgba(255,255,255,190);
+                border: 1px solid rgba(20,30,40,45); border-radius: 16px;
+                padding: 4px 14px;
+            }}
+            QComboBox:hover, QSpinBox:hover {{ background: rgba(255,255,255,245); }}
+            QComboBox::drop-down {{ border: none; width: 30px; }}
+            QComboBox::down-arrow {{
+                image: none; width: 0; height: 0;
+                border-left: 5px solid transparent; border-right: 5px solid transparent;
+                border-top: 6px solid rgba(17,24,32,150); margin-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                {FONT_STACK_QSS}
+                font-size: 17px; color: #2a3644; background: #ffffff;
+                border: 1px solid rgba(20,30,40,60); border-radius: 10px;
+                selection-background-color: rgba(232,93,147,45); selection-color: #111820;
+                outline: none;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{ width: 0; }}
+            """
+        )
+        self.recur_combo = QComboBox()
+        for token, label in RECUR_CHOICES:
+            self.recur_combo.addItem(label, token)
+        # Custom interval entry: selecting it reveals the count/unit spinners ("every:Nd/Nw").
+        self.recur_combo.addItem("自定义…", "every:")
+        self.recur_combo.setCurrentIndex(0)
+        self.recur_combo.currentIndexChanged.connect(self._recur_changed)
+        self.recur_combo.setStyleSheet(recur_light_qss)
+        self.recur_combo.setCursor(Qt.PointingHandCursor)
+        recur_row.addWidget(self.recur_combo, 1)
+        # Custom "every:Nd/Nw" interval: a spin count plus a 天/周 unit picker.
+        self.recur_count = QSpinBox()
+        self.recur_count.setRange(1, 365)
+        self.recur_count.setValue(1)
+        self.recur_count.setVisible(False)
+        self.recur_count.setStyleSheet(recur_light_qss)
+        recur_row.addWidget(self.recur_count)
+        self.recur_unit = QComboBox()
+        self.recur_unit.addItem("天", "d")
+        self.recur_unit.addItem("周", "w")
+        self.recur_unit.setVisible(False)
+        self.recur_unit.setStyleSheet(recur_light_qss)
+        self.recur_unit.setCursor(Qt.PointingHandCursor)
+        recur_row.addWidget(self.recur_unit)
+        self.recur_box.setVisible(False)
+        outer.addWidget(self.recur_box)
+
+        self._detail_open = False
+        self._subtasks_open = False
+        self._recur_open = False
+        self._custom_every = False
+        self._relayout()
         ink = getattr(getattr(parent_window, "app", None), "ink", None)
         self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
 
@@ -812,13 +1467,169 @@ class TodoEditorPopup(QDialog):
         self.panel.setStyleSheet(
             f"QFrame#addPanel {{ {FONT_STACK_QSS} border-radius: 22px; border: 1px solid rgba(255,255,255,170); background: {background}; }}"
             f" QLineEdit {{ {FONT_STACK_QSS} border: 1px solid rgba(255,255,255,145); border-radius: 17px; background: {field}; color: {color}; font-size: {POPUP_INPUT_FONT_PX}px; padding: 9px 14px; selection-background-color: {selection}; }}"
+            f" QPlainTextEdit {{ {FONT_STACK_QSS} border: 1px solid rgba(255,255,255,145); border-radius: 12px; background: {field}; color: {color}; font-size: {POPUP_INPUT_FONT_PX}px; padding: 8px 12px; selection-background-color: {selection}; }}"
         )
 
+    def _make_chip_button(self, text: str) -> QPushButton:
+        # Compact neutral chip (17px) instead of the 27px fluent PushButton: the toggle row is
+        # a secondary affordance and should read quieter than the primary input fields.
+        button = QPushButton(text, self.panel)
+        button.setCheckable(True)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedHeight(34)
+        button.setStyleSheet(
+            f"""
+            QPushButton {{
+                {FONT_STACK_QSS}
+                font-size: 17px;
+                color: #2a3644;
+                background: rgba(255,255,255,175);
+                border: 1px solid rgba(20,30,40,42);
+                border-radius: 16px;
+                padding: 4px 18px;
+            }}
+            QPushButton:hover {{ background: rgba(255,255,255,240); }}
+            QPushButton:checked {{
+                color: #b8467a;
+                background: rgba(232,93,147,32);
+                border-color: rgba(232,93,147,150);
+                font-weight: 600;
+            }}
+            """
+        )
+        return button
+
     def _position(self, point: QPoint, width: int) -> None:
-        width = max(420, min(600, width))
-        self.setFixedSize(width, 132)
-        self.panel.setGeometry(0, 0, self.width(), self.height())
+        self._width = max(420, min(600, width))
+        self._relayout()
         self.move(point)
+
+    def _toggle_details(self) -> None:
+        self._detail_open = not self._detail_open
+        self.details_toggle.setChecked(self._detail_open)
+        self.details_edit.setVisible(self._detail_open)
+        self._relayout()
+
+    def _toggle_subtasks(self) -> None:
+        self._subtasks_open = not self._subtasks_open
+        self.subtask_toggle.setChecked(self._subtasks_open)
+        self.subtask_box.setVisible(self._subtasks_open)
+        if self._subtasks_open and not self._subtask_rows:
+            self._add_subtask_row()
+        self._relayout()
+
+    def _toggle_recur(self) -> None:
+        self._recur_open = not self._recur_open
+        self.recur_toggle.setChecked(self._recur_open)
+        self.recur_box.setVisible(self._recur_open)
+        self._relayout()
+
+    def _recur_changed(self) -> None:
+        token = self.recur_combo.currentData()
+        self._custom_every = token == "every:"
+        self.recur_count.setVisible(self._custom_every)
+        self.recur_unit.setVisible(self._custom_every)
+        self._relayout()
+
+    def _add_subtask_row(self, text: str = "", sub_id: str | None = None) -> None:
+        # Programmatic adds (open_edit prefill, "+ 添加子任务") imply the section is open.
+        self._subtasks_open = True
+        self.subtask_box.setVisible(True)
+        row_widget = QWidget(self.subtask_box)
+        h = QHBoxLayout(row_widget)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        edit = QLineEdit()
+        edit.setPlaceholderText("子任务内容")
+        edit.setFixedHeight(40)
+        edit.returnPressed.connect(self.accept)
+        h.addWidget(edit, 1)
+        entry = {"id": sub_id or str(uuid4()), "widget": row_widget, "edit": edit}
+        up = RoundButton("↑", SUBTASK_BTN_SIZE, parent=row_widget)
+        up.clicked.connect(lambda: self._move_subtask(entry, -1))
+        h.addWidget(up)
+        down = RoundButton("↓", SUBTASK_BTN_SIZE, parent=row_widget)
+        down.clicked.connect(lambda: self._move_subtask(entry, 1))
+        h.addWidget(down)
+        delete = RoundButton("✕", SUBTASK_BTN_SIZE, parent=row_widget)
+        delete.clicked.connect(lambda: self._remove_subtask(entry))
+        h.addWidget(delete)
+        edit.setText(text)
+        # Row widgets sit after the leading "+ 添加子任务" row inside subtask_list.
+        self.subtask_list.insertWidget(len(self._subtask_rows) + 1, row_widget)
+        self._subtask_rows.append(entry)
+        self._relayout()
+
+    def _remove_subtask(self, entry: dict) -> None:
+        if entry in self._subtask_rows:
+            self._subtask_rows.remove(entry)
+            entry["widget"].deleteLater()
+            self._relayout()
+
+    def _move_subtask(self, entry: dict, delta: int) -> None:
+        index = self._subtask_rows.index(entry)
+        target = index + delta
+        if not 0 <= target < len(self._subtask_rows):
+            return
+        self._subtask_rows[index], self._subtask_rows[target] = self._subtask_rows[target], self._subtask_rows[index]
+        self.subtask_list.removeWidget(entry["widget"])
+        self.subtask_list.insertWidget(target + 1, entry["widget"])
+        self._relayout()
+
+    def _current_subtasks(self) -> list[SubTask]:
+        subs: list[SubTask] = []
+        for order, entry in enumerate(self._subtask_rows):
+            text = entry["edit"].text().strip()
+            if text:
+                subs.append(SubTask(id=entry["id"], text=text, order=order))
+        return subs
+
+    def _current_recur(self) -> str:
+        if not self._recur_open:
+            return "none"
+        token = self.recur_combo.currentData()
+        if token == "every:":
+            unit = self.recur_unit.currentData() or "d"
+            return parse_recur(f"every:{self.recur_count.value()}{unit}") or "none"
+        return token or "none"
+
+    def _relayout(self) -> None:
+        # Size now, then again on the next event-loop pass: widget sizeHints (QPlainTextEdit,
+        # freshly shown sections) only settle after polishing, and a single synchronous pass
+        # measures them stale — that's what overlapped the sections.
+        self._sync_size()
+        QTimer.singleShot(0, self._sync_size)
+
+    def _sync_size(self) -> None:
+        layout = self.panel.layout()
+        layout.invalidate()
+        layout.activate()
+        self.panel.adjustSize()
+        height = max(132, self.panel.sizeHint().height())
+        self.setFixedSize(self._width, height)
+        self.panel.setGeometry(0, 0, self._width, height)
+
+    def _reset_fields(self) -> None:
+        self._detail_open = False
+        self._subtasks_open = False
+        self._recur_open = False
+        self._custom_every = False
+        self.details_toggle.setChecked(False)
+        self.subtask_toggle.setChecked(False)
+        self.recur_toggle.setChecked(False)
+        self.details_edit.setVisible(False)
+        self.subtask_box.setVisible(False)
+        self.recur_box.setVisible(False)
+        self.recur_count.setVisible(False)
+        self.recur_unit.setVisible(False)
+        self.details_edit.clear()
+        while len(self._subtask_rows):
+            self._remove_subtask(self._subtask_rows[0])
+        self.recur_combo.blockSignals(True)
+        self.recur_combo.setCurrentIndex(0)
+        self.recur_combo.blockSignals(False)
+        self.recur_count.setValue(1)
+        self.recur_unit.setCurrentIndex(0)
 
     def _show_focused(self) -> None:
         self.show()
@@ -832,15 +1643,43 @@ class TodoEditorPopup(QDialog):
         self.input.clear()
         self.location_input.clear()
         self.ddl_input.clear()
+        self._reset_fields()
         self._position(point, width)
         self._show_focused()
 
-    def open_edit(self, todo_id: str, text: str, location: str, ddl: str, point: QPoint, width: int) -> None:
-        self._edit_id = todo_id
+    def open_edit(
+        self,
+        todo: "TodoItem",
+        point: QPoint,
+        width: int,
+    ) -> None:
+        """Prefill the editor from a full TodoItem (text/location/ddl + details/subtasks/recur)."""
+        self._edit_id = todo.id
         self.setWindowTitle("编辑事项")
-        self.input.setText(text)
-        self.location_input.setText(location)
-        self.ddl_input.setText(ddl)
+        self.input.setText(todo.text)
+        self.location_input.setText(todo.location)
+        self.ddl_input.setText(todo.ddl)
+        self._reset_fields()
+        if todo.details:
+            self.details_edit.setPlainText(todo.details)
+            self._detail_open = True
+            self.details_edit.setVisible(True)
+        if todo.subtasks:
+            self._subtasks_open = True
+            self.subtask_box.setVisible(True)
+            for sub in todo.subtasks:
+                self._add_subtask_row(sub.text, sub.id)
+        if parse_recur(todo.recur) not in (None, "none"):
+            self._recur_open = True
+            self.recur_box.setVisible(True)
+            token = todo.recur
+            if token.startswith("every:"):
+                self.recur_combo.setCurrentIndex(max(0, self.recur_combo.findData("every:")))
+                spec = token[len("every:"):]
+                self.recur_count.setValue(int(spec[:-1]))
+                self.recur_unit.setCurrentIndex(max(0, self.recur_unit.findData(spec[-1])))
+            else:
+                self.recur_combo.setCurrentIndex(max(0, self.recur_combo.findData(token)))
         self._position(point, width)
         self._show_focused()
 
@@ -859,11 +1698,17 @@ class TodoEditorPopup(QDialog):
         text = self.input.text().strip()
         location = self.location_input.text().strip()
         ddl = self.ddl_input.text().strip()
+        details = self.details_edit.toPlainText().strip() if self._detail_open else ""
+        subtasks = self._current_subtasks() if self._subtasks_open else []
+        recur = self._current_recur()
         if text:
             if self._edit_id is not None:
-                self.parent_window.update_todo(self._edit_id, text, location, ddl)
+                self.parent_window.update_todo(
+                    self._edit_id, text, location, ddl,
+                    details=details, subtasks=subtasks, recur=recur,
+                )
             else:
-                self.parent_window.add_todo(text, location, ddl)
+                self.parent_window.add_todo(text, location, ddl, details=details, subtasks=subtasks, recur=recur)
         self._edit_id = None
         self.hide()
 
@@ -1224,6 +2069,49 @@ class MemoWindow(QWidget):
         self.layout.addWidget(self.empty, 1)
 
         self.add_popup = TodoEditorPopup(self)
+        self.details_popup = DetailsPopup(self)
+
+    def show_details_preview(self, row: "TodoRow") -> None:
+        """1.0s-hover anchor for TodoRow: show the details/subtask preview near the cursor."""
+        if self.add_popup.isVisible():
+            return
+        self.details_popup.show_for(row.todo, QCursor.pos())
+
+    def hide_details_preview(self) -> None:
+        # Grace-period close: the popup floats next to the row, so this fires while the user
+        # is travelling toward it — the popup aborts the close when the cursor arrives.
+        self.details_popup.schedule_close()
+
+    def close_details_preview(self) -> None:
+        self.details_popup.hide()
+
+    def complete_subtask(self, todo_id: str, subtask_id: str, checked: bool) -> None:
+        """Toggle one subtask; persists and refreshes ONLY the owning row (no column rebuild)."""
+        todo = next((item for item in self.app.state.todos if item.id == todo_id), None)
+        if todo is None:
+            return
+        sub = next((s for s in todo.subtasks if s.id == subtask_id), None)
+        if sub is None:
+            return
+        if sub.done == bool(checked):
+            return
+        sub.done = bool(checked)
+        self.app.save_later()
+        row = self._rows.get(todo_id)
+        if row is not None:
+            row.refresh_subtask_state()
+        self.details_popup.sync_subtask(todo_id, subtask_id, checked)
+        # 双向半自动: checking the LAST open subtask flashes the parent row but never checks it.
+        if checked and todo.subtasks and all(s.done for s in todo.subtasks) and row is not None:
+            row.flash_completion()
+
+    def toggle_subtasks_collapsed(self, todo_id: str) -> None:
+        todo = next((item for item in self.app.state.todos if item.id == todo_id), None)
+        if todo is None or not todo.subtasks:
+            return
+        todo.subtasksCollapsed = not todo.subtasksCollapsed
+        self.app.save_later()
+        self.refresh()
 
     def protect_content_layer(self) -> None:
         # Keep the content layer above the surface and apply the current screen-capture policy (by
@@ -1258,6 +2146,7 @@ class MemoWindow(QWidget):
     def hideEvent(self, event) -> None:
         # Suspend dock timers/animation while the window is hidden (e.g. from the tray); showEvent
         # restores the dock. _dock_edge/_dock_hidden are kept so the state survives a hide/show.
+        self.close_details_preview()
         self._dock_poll.stop()
         self._hide_timer.stop()
         self._cancel_slide()
@@ -1383,7 +2272,10 @@ class MemoWindow(QWidget):
         for row in self._rows.values():
             # edit_btn (✎) opens the editor and ddl_label (the DDLCell) also opens it on click;
             # the time cell on calendar rows is display-only, so only their checkbox is interactive.
-            widgets.extend([row.checkbox, row.urgent, row.ddl_label, row.edit_btn])
+            widgets.extend([row.checkbox, row.urgent, row.ddl_label, row.edit_btn, row.sub_toggle])
+            if row.subtask_area.isVisible():
+                widgets.append(row.subtask_area)
+                widgets.extend(row.subtask_area.findChildren(QCheckBox))
         for row in self._event_rows.values():
             widgets.append(row.checkbox)
         # Wheel scrolling over the list is handled by the global wheel hook (see
@@ -1763,13 +2655,16 @@ class MemoWindow(QWidget):
     def apply_window_layer(self) -> None:
         # SetWindowPos/Z-order churn on every apply_settings call makes the window flash;
         # the tool-window style, parent detach, and topmost flag are sticky, so once is enough.
-        if not self.isVisible() or self._window_layer_applied:
+        # The topmost flag itself follows 允许被遮盖 (allowCover): False pins the window on top,
+        # True lets other windows cover it. Toggling the setting re-runs just the flag.
+        if not self.isVisible():
             return
         hwnd = int(self.winId())
-        apply_tool_window(hwnd)
-        detach_from_parent(hwnd)
-        set_topmost(hwnd, True)
-        self._window_layer_applied = True
+        if not self._window_layer_applied:
+            apply_tool_window(hwnd)
+            detach_from_parent(hwnd)
+            self._window_layer_applied = True
+        set_topmost(hwnd, not self.app.state.settings.allowCover)
 
     @staticmethod
     def _todo_sort_key(item: TodoItem) -> tuple:
@@ -1826,6 +2721,7 @@ class MemoWindow(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        self.close_details_preview()
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             if item.widget():
@@ -1971,8 +2867,12 @@ class MemoWindow(QWidget):
         scrollbar_reserve = 0 if self._expanded else SCROLLBAR_LAYOUT_RESERVE
         trailing_reserve = ddl_reserve + scrollbar_reserve
         auto_width = self._adaptive_width(active, events, screen, trailing_reserve)
-        text_width = self._text_width_for_window(auto_width, trailing_reserve)
-        content_height = sum(self._measure_row_height(todo.text, text_width, todo.location) for todo in active)
+        has_subs = any(todo.subtasks for todo in active)
+        text_width = self._text_width_for_window(auto_width, trailing_reserve, has_subs)
+        content_height = sum(
+            self._measure_row_height(todo.text, text_width, todo.location) + todo_extra_height(todo)
+            for todo in active
+        )
         if events:
             # Calendar rows render "📅 {summary}", which wraps (and grows taller than ROW_HEIGHT)
             # for long titles — measure them like todos so the window height isn't underestimated
@@ -2001,7 +2901,12 @@ class MemoWindow(QWidget):
         if manual:
             width = min(max(self.app.state.window.width, MIN_WIDTH), width_cap)
             height = min(max(self.app.state.window.height, MIN_HEIGHT), screen_cap)
-            text_width = self._text_width_for_window(width, trailing_reserve)
+            # A manual width can be narrower than the natural DDL column: clamp the column so
+            # the title keeps ROW_MIN_TEXT and every trailing widget (❗ / ✎) stays visible.
+            ddl_reserve = min(ddl_reserve, max(0, width - row_fixed_chrome(0, has_subs) - ROW_MIN_TEXT))
+            ddl_width = max(0, ddl_reserve - DDL_SEP_WIDTH - DDL_COL_GAPS) if column_active else 0
+            trailing_reserve = ddl_reserve + scrollbar_reserve
+            text_width = self._text_width_for_window(width, trailing_reserve, has_subs)
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         elif self._expanded:
             # Grow to fit everything; only the physical screen limits us. Hide the scrollbar
@@ -2010,10 +2915,12 @@ class MemoWindow(QWidget):
             height = min(wanted, screen_cap)
             fits = wanted <= screen_cap
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff if fits else Qt.ScrollBarAsNeeded)
+            text_width = self._text_width_for_window(width, trailing_reserve, has_subs)
         else:
             width = auto_width
             height = min(wanted, int(screen.height() * MAX_HEIGHT_RATIO), screen_cap)
             self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            text_width = self._text_width_for_window(width, trailing_reserve, has_subs)
         # Apply in every branch: the manual size also has to be enforced at startup (the window
         # is built at its constructor size long before the saved geometry is consulted).
         if (width, height) != (self.width(), self.height()):
@@ -2042,22 +2949,24 @@ class MemoWindow(QWidget):
             self._reposition_dock()
 
     def _adaptive_width(self, active: list[TodoItem], events: list[CalendarEvent], screen: QRect, ddl_reserve: int = 0) -> int:
-        minimum = INK_MIN_WIDTH if self.skin.kind == "ink" else MIN_WIDTH
+        minimum = max(MIN_WIDTH, INK_MIN_WIDTH if self.skin.kind == "ink" else 0)
         if not active and not events:
             return minimum
         metrics = QFontMetrics(mixed_font(12))
         text_widths = [metrics.horizontalAdvance(todo.text) for todo in active]
         text_widths += [metrics.horizontalAdvance(f"📅 {event.summary}") for event in events]
         longest = max(text_widths) if text_widths else 0
-        chrome = OUTER_X * 2 + 12 + 18 + 30 + 28 + 24 + 40 + ddl_reserve  # +40: 编辑✎按钮 + 间距
+        # Same chrome the title width must subtract (incl. the subtask ▾/badge worst case) so
+        # auto-size always leaves room for every trailing widget.
+        chrome = row_fixed_chrome(ddl_reserve, has_subtasks=True)
         max_width = min(MAX_WIDTH, int(screen.width() * MAX_WIDTH_RATIO), screen.width() - 64)
         return max(minimum, min(max_width, longest + chrome))
 
-    def _text_width_for_window(self, width: int, ddl_reserve: int = 0) -> int:
-        # Must mirror _adaptive_width's chrome (incl. the +40 编辑✎按钮 reserve); otherwise the
-        # title label is pinned wider than the row can hold and pushes the trailing ❗ button off
-        # the right edge, where it clips out of view.
-        return max(90, width - (OUTER_X * 2 + 12 + 18 + 30 + 28 + 12 + 40) - ddl_reserve)
+    def _text_width_for_window(self, width: int, ddl_reserve: int = 0, has_subtasks: bool = False) -> int:
+        # Must use the same chrome as _adaptive_width (row_fixed_chrome) or the title label is
+        # pinned wider than the row can hold and pushes the trailing ❗ / ✎ buttons off the
+        # right edge, where they clip out of view.
+        return max(ROW_MIN_TEXT, width - row_fixed_chrome(ddl_reserve, has_subtasks))
 
     def _time_column_width(self, active: list[TodoItem], events: list[CalendarEvent], expanded: bool = False) -> int:
         # Width that fits the widest deadline/event-time text in this view (so they show in
@@ -2072,7 +2981,8 @@ class MemoWindow(QWidget):
 
     def _measure_row_height(self, text: str, text_width: int, location: str = "") -> int:
         # Mirror TodoRow/CalendarRow.apply_text_width so the window height pre-calc matches the
-        # rows' actual heights (incl. the optional 📍 location second line).
+        # rows' actual heights (incl. the optional 📍 location second line). Subtask/recur extras
+        # are added by the caller via todo_extra_height.
         height = wrapped_text_height(text, text_width) + (location_line_height() if location.strip() else 0)
         return max(ROW_HEIGHT, height + 18)
 
@@ -2101,10 +3011,21 @@ class MemoWindow(QWidget):
         anchor = QPoint(self.x() + (self.width() - popup_width) // 2, self.y() + self.height() + 10)
         self.add_popup.open_add(self._popup_position(popup_width, anchor), popup_width)
 
-    def add_todo(self, text: str, location: str = "", ddl: str = "") -> None:
+    def add_todo(
+        self,
+        text: str,
+        location: str = "",
+        ddl: str = "",
+        details: str = "",
+        subtasks: list[SubTask] | None = None,
+        recur: str = "none",
+    ) -> None:
         next_order = max([todo.order for todo in self.app.state.todos] + [0]) + 1
         self.app.state.todos.append(
-            TodoItem(id=str(uuid4()), text=text, ddl=ddl, location=location, order=next_order)
+            TodoItem(
+                id=str(uuid4()), text=text, ddl=ddl, location=location, order=next_order,
+                details=details or "", subtasks=list(subtasks or []), recur=parse_recur(recur) or "none",
+            )
         )
         self.app.save()
         self.refresh()
@@ -2113,6 +3034,7 @@ class MemoWindow(QWidget):
         todo = next((item for item in self.app.state.todos if item.id == todo_id), None)
         if todo is None:
             return
+        self.close_details_preview()
         popup_width = max(420, min(600, self.width() + 56))
         row = self._rows.get(todo_id)
         if row is not None:
@@ -2120,19 +3042,39 @@ class MemoWindow(QWidget):
         else:
             anchor = QPoint(self.x(), self.y() + self.height() + 10)
         self.add_popup.open_edit(
-            todo_id, todo.text, todo.location, todo.ddl,
+            todo,
             self._popup_position(popup_width, anchor), popup_width,
         )
 
-    def update_todo(self, todo_id: str, text: str, location: str, ddl: str) -> None:
+    def update_todo(
+        self,
+        todo_id: str,
+        text: str,
+        location: str,
+        ddl: str,
+        details: str | None = None,
+        subtasks: list[SubTask] | None = None,
+        recur: str | None = None,
+    ) -> None:
         todo = next((item for item in self.app.state.todos if item.id == todo_id), None)
         if todo is None:
             return
-        if (todo.text, todo.location, todo.ddl) == (text, location, ddl):
-            return
+        # details/subtasks/recur are optional: None leaves the stored value untouched, so the
+        # plain three-field call keeps its old no-op-if-unchanged semantics.
+        if details is None and subtasks is None and recur is None:
+            if (todo.text, todo.location, todo.ddl) == (text, location, ddl):
+                return
         todo.text = text
         todo.location = location
         todo.ddl = ddl
+        if details is not None:
+            todo.details = details
+        if subtasks is not None:
+            todo.subtasks = list(subtasks)
+        if recur is not None:
+            todo.recur = parse_recur(recur) or "none"
+            if todo.recur == "none":
+                todo.recurAnchor = None
         self.app.save()
         self.refresh()
 
@@ -2148,12 +3090,44 @@ class MemoWindow(QWidget):
         todo = next((item for item in self.app.state.todos if item.id == todo_id), None)
         if not todo:
             return
+        self.close_details_preview()
         if not checked:
+            # Unchecking the parent leaves subtask state untouched.
             todo.done = False
             todo.completedAt = None
             self.app.save()
             self.refresh()
             return
+        if checked and todo.subtasks:
+            # 双向半自动: completing the parent marks every subtask done (no completedAt on
+            # SubTask — done is the only record).
+            for sub in todo.subtasks:
+                sub.done = True
+
+        now = datetime.now()
+        recur_token = parse_recur(todo.recur)
+        if recur_token not in (None, "none"):
+            # Snapshot the completed occurrence (with its OLD ddl) into history, then roll the
+            # live item forward. Both dim and archive modes regenerate; dim just means the
+            # regenerated item stays dimmed-in-place rather than animating out.
+            snapshot = replace(
+                todo,
+                id=str(uuid4()),
+                ddl=todo.ddl,
+                done=True,
+                completedAt=utc_now(),
+                subtasks=[replace(sub) for sub in todo.subtasks],
+            )
+            if apply_recurrence_on_complete(todo, now):
+                self.app.state.history.append(snapshot)
+                self.app.save_later()
+                self.refresh()
+                self.app.history_window.refresh()
+                return
+            # Unparseable ddl / no next occurrence: fall through to the normal completion path.
+            todo.done = True
+            todo.completedAt = utc_now()
+
         if self.app.state.settings.completeBehavior == "dim":
             todo.done = True
             todo.completedAt = utc_now()
@@ -2177,6 +3151,7 @@ class MemoWindow(QWidget):
             button.apply_ink_theme(theme)
         self.apply_settings(refresh_rows=True)
         self.add_popup.apply_ink_theme(theme)
+        self.details_popup.apply_ink_theme(theme)
 
 
 class LiquidMemoApp:

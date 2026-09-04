@@ -78,7 +78,9 @@ def test_app_windows_build(qapp):
     app = _stub_app()
     app_mod.HistoryWindow(app)
     editor = app_mod.TodoEditorPopup(None)
-    assert editor.height() == 132
+    # The editor is no longer fixed at 132: it keeps a 132 base but grows with the expanded
+    # details/subtask/recur sections. Closed, it sits at its compact base height.
+    assert editor.height() >= 132
 
 
 def test_large_color_dialog_resized(qapp):

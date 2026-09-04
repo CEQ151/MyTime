@@ -2,8 +2,12 @@
 Talks to the app only through the duck-typed `self.app` handle."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING
+import json
+import shutil
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QPixmap
@@ -15,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -47,6 +52,7 @@ from ui_common import (
     FramelessDragMixin,
     InfoToolTipFilter,
     LargeColorDialog,
+    LargeSwitchButton,
     SETTING_CONTROL_FONT_PX,
     SETTING_NAV_FONT_PX,
     SETTING_ROW_TITLE_FONT_PX,
@@ -60,11 +66,58 @@ from ui_common import (
 )
 from skin_editor import CropDialog, export_crop, image_open_filter, load_skin_pixmap
 from startup import is_startup_enabled, set_startup
-from state_store import CalendarFeed, CustomSkin, Settings, skins_dir
+from state_store import STATE_PATH, AppState, CalendarFeed, CustomSkin, Settings, skins_dir
 from version import APP_VERSION, GITHUB_URL
 
 if TYPE_CHECKING:
     from app import LiquidMemoApp
+
+# ── Backup / migration (导出 / 导入) ───────────────────────────────────────────────────
+# Exported payloads carry settings + subscribed calendars + todos + history only. Image
+# skins are deliberately excluded: their data is a list of files on disk, and a backup
+# that references files the target machine does not have would silently break rendering.
+EXPORT_APP_TAG = "liquid-memo-widget"
+EXPORT_VERSION = 1
+CUSTOM_SKINS_NOTE = "图片皮肤不随备份导出；导入后请在设置中重新添加图片皮肤。"
+
+
+def export_payload(state: "AppState") -> dict[str, Any]:
+    """Build the export payload from a state. Pure (no dialogs / file IO) for testability."""
+    settings_dict = asdict(state.settings)
+    settings_dict["customSkins"] = []
+    settings_dict["customSkinsNote"] = CUSTOM_SKINS_NOTE
+    return {
+        "app": EXPORT_APP_TAG,
+        "version": EXPORT_VERSION,
+        "exportedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "settings": settings_dict,
+        "calendarFeeds": [asdict(feed) for feed in state.settings.calendarFeeds],
+        "todos": [asdict(todo) for todo in state.todos],
+        "history": [asdict(todo) for todo in state.history],
+    }
+
+
+def validate_import(data: Any) -> None:
+    """Raise ValueError unless `data` is a payload produced by export_payload."""
+    if not isinstance(data, dict):
+        raise ValueError("不是有效的备份文件")
+    if data.get("app") != EXPORT_APP_TAG:
+        raise ValueError("不是本应用导出的备份文件")
+    if not isinstance(data.get("settings"), dict):
+        raise ValueError("备份缺少设置数据")
+    if not isinstance(data.get("todos"), list):
+        raise ValueError("备份缺少待办数据")
+    if not isinstance(data.get("history"), list):
+        raise ValueError("备份缺少历史记录数据")
+
+
+def import_backup_path(state_path: "Path", stamp: str) -> "Path":
+    """Pre-import safety-copy name: liquid-state.json.pre-import-YYYYMMDD-HHMMSS."""
+    return state_path.with_name(f"{state_path.name}.pre-import-{stamp}.json")
+
+
+def import_default_file_name() -> str:
+    return f"LiquidMemoWidget-backup-{datetime.now():%Y%m%d}.json"
 
 
 class LargeMenuComboBox(ComboBox):
@@ -238,6 +291,12 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             self.app.state.settings.allowScreenshot,
         )
         self.allow_screenshot.checkedChanged.connect(lambda _checked: self._apply())
+        self.allow_cover = self._switch_row(
+            "允许被其他窗口遮挡",
+            "关闭后备忘窗口不再置顶，可被其他窗口盖住（点击穿透行为不变）。",
+            self.app.state.settings.allowCover,
+        )
+        self.allow_cover.checkedChanged.connect(lambda _checked: self._apply())
 
         self._section("提醒")
         self.notify_enabled = self._switch_row(
@@ -278,6 +337,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             self.app.state.settings.autoCheckUpdates,
         )
         self.auto_update.checkedChanged.connect(lambda _checked: self._apply())
+        self._backup_card()
 
         self.form.addStretch()
         self.nav.setCurrentRow(0)
@@ -350,7 +410,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         return combo
 
     def _switch_row(self, title: str, content: str, checked: bool) -> SwitchButton:
-        switch = SwitchButton()
+        switch = LargeSwitchButton()
         switch.setChecked(checked)
         enlarge_control_font(switch)
         # The On/Off label carries its own copy of switch_button.qss, which shadows
@@ -568,6 +628,174 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         layout.addWidget(self.update_status_label, 1)
         layout.addWidget(check_button)
         self.form.addWidget(FluentSettingRow("检查更新", "从 GitHub Releases 获取新版本，自动下载并安装。", control))
+
+    def _backup_card(self) -> None:
+        """备份与迁移 card (关于 page): export/import settings + feeds + todos + history.
+        Mirrors the card pattern of _feeds_card / _image_skins_card."""
+        card = CardWidget()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 12, 18, 14)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        title = BodyLabel("备份与迁移")
+        set_label_font(title, SETTING_ROW_TITLE_FONT_PX)
+        header.addWidget(title)
+        info = TransparentToolButton(FluentIcon.INFO, card)
+        info.setFixedSize(26, 26)
+        info.setIconSize(QSize(16, 16))
+        info.setCursor(Qt.WhatsThisCursor)
+        info.setToolTip(
+            "导出内容：订阅的日历、设置参数、当前事件与历史记录。"
+            "不包含图片皮肤（导出前请记下图片皮肤，导入后需重新添加）。"
+        )
+        info.installEventFilter(InfoToolTipFilter(info, showDelay=200, position=ToolTipPosition.TOP))
+        header.addWidget(info)
+        header.addStretch()
+        layout.addLayout(header)
+
+        body = BodyLabel(
+            "导出或导入你的数据：订阅的日历、设置参数、当前事件与历史记录。"
+            "不含图片皮肤（导出时图片皮肤列表会被清空，导入后请重新添加）。"
+            "导入会覆盖当前全部数据，导入前会自动备份现有数据。"
+        )
+        set_label_font(body, SETTING_STATUS_FONT_PX, color="rgba(17,24,32,150)")
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        export_button = PushButton("导出数据", card, FluentIcon.SHARE)
+        export_button.clicked.connect(self._export_data)
+        enlarge_control_font(export_button)
+        import_button = PushButton("导入数据", card, FluentIcon.DOWNLOAD)
+        import_button.clicked.connect(self._import_data)
+        enlarge_control_font(import_button)
+        buttons.addStretch()
+        buttons.addWidget(export_button)
+        buttons.addWidget(import_button)
+        layout.addLayout(buttons)
+
+        self.form.addWidget(card)
+
+    def _state_store_path(self) -> Path:
+        """The live state file path: the app's store if present, else the default."""
+        store = getattr(self.app, "store", None)
+        return getattr(store, "path", None) or STATE_PATH
+
+    def _export_data(self) -> None:
+        try:
+            self._export_data_inner()
+        except Exception as exc:  # slot exceptions vanish under pythonw — surface them
+            QMessageBox.critical(self, "导出失败", f"发生未预期的错误：{exc}")
+
+    def _export_data_inner(self) -> None:
+        default_path = Path(self._state_store_path()).with_name(import_default_file_name())
+        # DontUseNativeDialog: native dialogs can fail to surface (open behind / unfocused)
+        # over our frameless settings window, which looks like the button did nothing.
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出数据", str(default_path), "JSON (*.json)",
+            options=QFileDialog.Option.DontUseNativeDialog,
+        )
+        if not path:
+            return
+        try:
+            payload = export_payload(self.app.state)
+            Path(path).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.warning(self, "导出失败", f"数据未导出：{exc}")
+            return
+        QMessageBox.information(self, "导出完成", f"备份已保存到：\n{path}")
+
+    def _import_data(self) -> None:
+        try:
+            self._import_data_inner()
+        except Exception as exc:  # slot exceptions vanish under pythonw — surface them
+            QMessageBox.critical(self, "导入失败", f"发生未预期的错误：{exc}")
+
+    def _import_data_inner(self) -> None:
+        default_path = Path(self._state_store_path()).with_name(import_default_file_name())
+        # Path.with_name("") raises ValueError ("Invalid name ''") — the crash that made the
+        # 导入数据 button look dead under pythonw (slot exceptions only reach stderr).
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入数据", str(default_path.parent), "JSON (*.json)",
+            options=QFileDialog.Option.DontUseNativeDialog,
+        )
+        if not path:
+            return
+        # Parse + validate BEFORE touching anything: on failure nothing is written and no
+        # backup copy is left behind.
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            validate_import(data)
+            imported = AppState.from_dict(data)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            QMessageBox.warning(self, "导入失败", f"无法读取备份，当前数据未改动：\n{exc}")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "确认导入",
+            "导入将覆盖当前全部数据（设置、日历订阅、待办与历史记录）。\n"
+            "导入前会自动备份现有数据。确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        state_path = self._state_store_path()
+        state_path = Path(state_path)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path = import_backup_path(state_path, datetime.now().strftime("%Y%m%d-%H%M%S"))
+        had_state = state_path.exists()
+        try:
+            if had_state:
+                shutil.copy2(state_path, backup_path)
+        except OSError as exc:
+            QMessageBox.warning(self, "导入失败", f"备份当前数据失败，已取消导入：\n{exc}")
+            return
+
+        # Swap the imported data into the live AppState in place (keep the object identity so
+        # every window/controller holding a reference keeps working), then persist + re-apply.
+        state = self.app.state
+        old_settings, old_todos, old_history = state.settings, state.todos, state.history
+        try:
+            state.settings = imported.settings
+            state.todos = imported.todos
+            state.history = imported.history
+            self.app.save()
+        except Exception as exc:
+            # Roll back in memory AND on disk, leaving no trace of the failed import.
+            state.settings, state.todos, state.history = old_settings, old_todos, old_history
+            try:
+                if had_state:
+                    shutil.copy2(backup_path, state_path)
+                elif state_path.exists():
+                    state_path.unlink()
+            except OSError:
+                pass
+            QMessageBox.warning(self, "导入失败", f"导入时出错，已恢复原数据：\n{exc}")
+            return
+        finally:
+            try:
+                if backup_path.exists():
+                    backup_path.unlink()
+            except OSError:
+                pass
+
+        self.sync_from_state()
+        self.app.window.apply_settings()
+        self.app.calendar.on_settings_changed()
+        self.app.notifier.check_now()
+        QMessageBox.information(
+            self,
+            "导入完成",
+            f"已从备份恢复 {len(imported.todos)} 条待办与 {len(imported.history)} 条历史记录。",
+        )
 
     def apply_ink_theme(self, theme) -> None:
         top = theme.panel_top if theme else "rgb(252,253,255)"
@@ -797,6 +1025,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             self.calendar_days.blockSignals(True),
             self.auto_update.blockSignals(True),
             self.allow_screenshot.blockSignals(True),
+            self.allow_cover.blockSignals(True),
         ]
         self._refresh_skin_combo()  # rebuild entries (custom skins may have changed) + reselect
         self._set_color_control(self.window_color, settings.windowTint)
@@ -816,6 +1045,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         self.auto_update.setChecked(settings.autoCheckUpdates)
         self.ink_theme.setCurrentIndex(max(0, self.ink_theme.findData(settings.inkTheme)))
         self.allow_screenshot.setChecked(settings.allowScreenshot)
+        self.allow_cover.setChecked(settings.allowCover)
         self.refresh_feed_list()
         self.refresh_image_skin_list()
         self.refresh_calendar_status()
@@ -823,7 +1053,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
             [self.skin, self.ink_theme, self.font_mode, self.complete, self.position, self.startup,
              self.window_mode, self.notify_enabled, self.notify_minutes, self.near_highlight_days,
              self.calendar_enabled, self.calendar_days, self.auto_update,
-             self.allow_screenshot],
+             self.allow_screenshot, self.allow_cover],
             blockers,
         ):
             widget.blockSignals(blocked)
@@ -873,6 +1103,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         screenshot_before = settings.allowScreenshot
         settings.allowScreenshot = self.allow_screenshot.isChecked()
         screenshot_changed = screenshot_before != settings.allowScreenshot
+        settings.allowCover = self.allow_cover.isChecked()
         settings.notifyMinutesBefore = int(self.notify_minutes.value())
         settings.nearHighlightDays = int(self.near_highlight_days.value())
         settings.autoCheckUpdates = self.auto_update.isChecked()

@@ -34,6 +34,13 @@ SetLayeredWindowAttributes.restype = wintypes.BOOL
 HWND_TOP = 0
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
+
+# Without argtypes ctypes passes the pseudo-handle -2 (HWND_NOTOPMOST) as a 32-bit c_int whose
+# upper bits don't match the 64-bit (HWND)-2 the API validates against — the NOTOPMOST call
+# silently fails and the window stays on top. TOPMOST (-1) happened to survive truncation,
+# which is why the default direction always worked.
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010

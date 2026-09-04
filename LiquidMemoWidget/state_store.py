@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+# Recurrence token whitelist lives in the pure recurrence module; importing it here is
+# safe because recurrence.py never imports state_store at module level.
+from recurrence import parse_recur
+
 
 APP_DIR = Path.home() / "AppData" / "Roaming" / "DesktopMemo_Pro"
 STATE_PATH = APP_DIR / "liquid-state.json"
@@ -100,6 +104,25 @@ def deadline_alert(raw: str, near_days: int, now: datetime | None = None) -> str
 
 
 @dataclass
+class SubTask:
+    """One checklist entry inside a TodoItem. Deliberately flat: no nested subtasks."""
+
+    id: str = field(default_factory=lambda: str(uuid4()))
+    text: str = ""
+    done: bool = False
+    order: int = 0
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "SubTask":
+        return SubTask(
+            id=str(data.get("id") or uuid4()),
+            text=str(data.get("text") or ""),
+            done=bool(data.get("done", False)),
+            order=int(data.get("order", 0)),
+        )
+
+
+@dataclass
 class TodoItem:
     id: str = field(default_factory=lambda: str(uuid4()))
     text: str = ""
@@ -110,9 +133,32 @@ class TodoItem:
     createdAt: str = field(default_factory=utc_now)
     completedAt: str | None = None
     order: int = 0
+    # Free-form long notes shown in the todo editor (kept after `order` so existing
+    # positional constructions of the original fields are unaffected).
+    details: str = ""
+    # Checklist entries; defensively parsed in from_dict (no nesting, non-dicts skipped).
+    subtasks: list[SubTask] = field(default_factory=list)
+    subtasksCollapsed: bool = False
+    # Repeat rule token (see recurrence.py): none|daily|weekly|weekdays|monthly|yearly
+    # or "every:Nd"/"every:Nw". Invalid values normalize to "none" in from_dict.
+    recur: str = "none"
+    # ISO timestamp of when the current every:N interval was started (on completion).
+    recurAnchor: str | None = None
+    # ISO timestamp of the most recent completion of a recurring todo.
+    lastDoneAt: str | None = None
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "TodoItem":
+        raw_subtasks = data.get("subtasks")
+        subtasks: list[SubTask] = []
+        if isinstance(raw_subtasks, list):
+            for element in raw_subtasks:
+                # Tolerate junk entries: skip non-dict elements and anything that itself
+                # carries a "subtasks" key (nesting is not supported).
+                if not isinstance(element, dict) or "subtasks" in element:
+                    continue
+                subtasks.append(SubTask.from_dict(element))
+        recur = str(data.get("recur") or "")
         return TodoItem(
             id=str(data.get("id") or uuid4()),
             text=str(data.get("text") or ""),
@@ -123,6 +169,12 @@ class TodoItem:
             createdAt=str(data.get("createdAt") or utc_now()),
             completedAt=data.get("completedAt"),
             order=int(data.get("order", 0)),
+            details=str(data.get("details") or ""),
+            subtasks=subtasks,
+            subtasksCollapsed=bool(data.get("subtasksCollapsed", False)),
+            recur=parse_recur(recur) or "none",
+            recurAnchor=data.get("recurAnchor"),
+            lastDoneAt=data.get("lastDoneAt"),
         )
 
 
@@ -212,6 +264,8 @@ class Settings:
     # (WDA_EXCLUDEFROMCAPTURE), so screenshots and recordings of the desktop don't grab them.
     # Set True to let them appear in captures (drives window_layer.set_capture_exclusion).
     allowScreenshot: bool = False
+    # 允许备忘录窗口被其他窗口遮盖（关闭置顶）。
+    allowCover: bool = False
     # Calendar subscription: when enabled, the widget syncs the next `calendarSyncDays` days of
     # events from the checked ICS/webcal feeds and shows them in a separate "日程" group.
     # Deleted feeds move to `calendarFeedArchive` so an accidental deletion can be restored.
@@ -333,6 +387,7 @@ class AppState:
             settings.skin = "acrylic"
         settings.calendarSyncDays = max(1, min(30, int(settings.calendarSyncDays or 7)))
         settings.allowScreenshot = bool(settings.allowScreenshot)
+        settings.allowCover = bool(settings.allowCover)
         settings.notificationsEnabled = bool(settings.notificationsEnabled)
         settings.autoCheckUpdates = bool(settings.autoCheckUpdates)
         settings.notifyMinutesBefore = max(1, min(1440, int(settings.notifyMinutesBefore or 15)))

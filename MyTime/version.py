@@ -7,3 +7,6 @@ APP_VERSION = "3.2.1"
 GITHUB_OWNER = "CEQ151"
 GITHUB_REPO = "MyTime"
 GITHUB_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
+# Public changelog page (rendered live from the repo's CHANGELOG.md); opened in the browser
+# after a successful in-app update.
+CHANGELOG_PAGE = "https://caienqi.xyz/changelog.html"

@@ -29,7 +29,7 @@ from ui_common import (
     scaled_dialog_size,
     set_label_font,
 )
-from version import APP_VERSION, GITHUB_URL
+from version import APP_VERSION, CHANGELOG_PAGE, GITHUB_URL
 
 if TYPE_CHECKING:
     from app import LiquidMemoApp
@@ -447,6 +447,13 @@ class UpdateManager:
 
     def _show_changelog(self, notes: str, html: bool = False) -> None:
         self._show_dialog(ChangelogDialog(notes, html, self.app))
+        # Successful in-app update: guide the user to the web changelog (live-rendered from the
+        # repo's CHANGELOG.md, with per-version UI screenshots). Best-effort — the dialog above
+        # already carries the release notes, so a failed shell-open is harmless.
+        try:
+            QDesktopServices.openUrl(QUrl(CHANGELOG_PAGE))
+        except Exception:
+            pass
 
     def _show_dialog(self, dialog: QDialog) -> None:
         self._dialog = dialog

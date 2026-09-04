@@ -1971,7 +1971,7 @@ class MemoWindow(QWidget):
         # theme switch recolours it in place instead of keeping the stale colours.
         self._ink_bg: QWidget | None = None
         self._ink_theme_key: str | None = None
-        self.setWindowTitle("桌面备忘")
+        self.setWindowTitle("MyTime")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
@@ -3162,7 +3162,7 @@ class LiquidMemoApp:
             import ctypes
             # Own taskbar identity: without this, dev runs under pythonw.exe group under the
             # Python AppUserModelID and taskbar buttons keep the Python icon despite windowIcon.
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CEQ151.LiquidMemoWidget")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CEQ151.MyTime")
         setTheme(Theme.LIGHT)
         self.qt.setFont(mixed_font(10))
         self.qt.setWindowIcon(tray_icon())
@@ -3189,7 +3189,7 @@ class LiquidMemoApp:
         self.ink.bind_ui()
         self.tray_menu: RoundMenu | None = None
         self.tray = QSystemTrayIcon(tray_icon())
-        self.tray.setToolTip("桌面备忘")
+        self.tray.setToolTip("MyTime")
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
         self.qt.aboutToQuit.connect(self.shutdown)

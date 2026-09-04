@@ -5,5 +5,5 @@
 APP_VERSION = "3.2.1"
 
 GITHUB_OWNER = "CEQ151"
-GITHUB_REPO = "liquid-memo-widget"
+GITHUB_REPO = "MyTime"
 GITHUB_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"

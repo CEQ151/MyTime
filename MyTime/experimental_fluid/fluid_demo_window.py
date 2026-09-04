@@ -4,7 +4,7 @@ A standalone QMainWindow wrapping FluidGLWidget. Handles keyboard shortcuts
 (R = reset, Space = pause, Esc = close) and prints FPS / GL info to stderr.
 
 Run with:
-    python -m LiquidMemoWidget.experimental_fluid.fluid_demo_window
+    python -m MyTime.experimental_fluid.fluid_demo_window
 """
 from __future__ import annotations
 

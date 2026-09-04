@@ -10,7 +10,7 @@ terms remain in effect.
 
 ## Python Dependencies
 
-Runtime Python dependencies are listed in `LiquidMemoWidget/requirements.txt`. Their licenses are
+Runtime Python dependencies are listed in `MyTime/requirements.txt`. Their licenses are
 defined by their respective upstream projects, including but not limited to:
 
 - PySide6

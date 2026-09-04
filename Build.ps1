@@ -2,14 +2,14 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install -r (Join-Path $root "LiquidMemoWidget\requirements.txt")
+python -m pip install -r (Join-Path $root "MyTime\requirements.txt")
 python -m pip install pyinstaller
 
 python -m PyInstaller `
   --noconfirm `
   --clean `
   --noconsole `
-  --name LiquidMemoWidget `
+  --name MyTime `
   --collect-all qfluentwidgets `
   --collect-all shiboken6 `
   --collect-all icalendar `
@@ -29,6 +29,6 @@ python -m PyInstaller `
   --hidden-import PySide6.QtOpenGL `
   --icon "$root\assets\logo.ico" `
   --add-data "$root\assets\logo.ico;assets" `
-  --add-data "$root\LiquidMemoWidget;LiquidMemoWidget" `
+  --add-data "$root\MyTime;MyTime" `
   --add-data "$root\CHANGELOG.md;." `
-  (Join-Path $root "RunLiquidMemoWidget.pyw")
+  (Join-Path $root "RunMyTime.pyw")

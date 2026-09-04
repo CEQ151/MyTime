@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🪟 Liquid Memo Widget · 桌面备忘小组件
+# 🪟 MyTime · MyTime小组件
 
 **Windows 11 上的半透明质感桌面待办小组件**
 
@@ -55,8 +55,8 @@
 ## 🚀 从源码运行
 
 ```powershell
-python -m pip install -r .\LiquidMemoWidget\requirements.txt
-pythonw .\RunLiquidMemoWidget.pyw    # pythonw 不弹出控制台窗口
+python -m pip install -r .\MyTime\requirements.txt
+pythonw .\RunMyTime.pyw    # pythonw 不弹出控制台窗口
 ```
 
 ---
@@ -67,7 +67,7 @@ pythonw .\RunLiquidMemoWidget.pyw    # pythonw 不弹出控制台窗口
 .\Build.ps1
 ```
 
-构建产物位于 `dist\LiquidMemoWidget`。
+构建产物位于 `dist\MyTime`。
 
 ---
 
@@ -81,8 +81,8 @@ pythonw .\RunLiquidMemoWidget.pyw    # pythonw 不弹出控制台窗口
 
 会生成：
 
-- `dist\LiquidMemoWidget-Portable-v<version>.zip`（便携版压缩包）
-- `dist\installer\LiquidMemoWidget-Setup-v<version>.exe`（安装程序）
+- `dist\MyTime-Portable-v<version>.zip`（便携版压缩包）
+- `dist\installer\MyTime-Setup-v<version>.exe`（安装程序）
 
 常用选项：
 

@@ -42,3 +42,32 @@ def test_reconcile_skips_unfrozen_source_run(monkeypatch):
     monkeypatch.setattr(startup, "set_startup", lambda enabled: calls.append(enabled))
     startup.reconcile_startup()
     assert reads == [] and calls == []
+
+
+def test_reconcile_migrates_legacy_value(monkeypatch):
+    # Pre-rename installs auto-started as "LiquidMemoWidget"; the MyTime build carries the
+    # enabled state over to the new value and deletes the legacy one.
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(startup, "_read_legacy_startup_command", lambda: '"C:/Old/App.exe"')
+    monkeypatch.setattr(startup, "_read_startup_command", lambda: None)
+    monkeypatch.setattr(startup, "_command", lambda: '"C:/App/MyTime.exe"')
+    deleted = []
+    monkeypatch.setattr(startup, "_delete_legacy_value", lambda: deleted.append(1))
+    calls = []
+    monkeypatch.setattr(startup, "set_startup", lambda enabled: calls.append(enabled))
+    startup.reconcile_startup()
+    assert deleted == [1] and calls == [True]
+
+
+def test_reconcile_migrate_keeps_newer_entry_and_drops_legacy(monkeypatch):
+    # Both values present: the new one wins, the stale legacy one is just removed.
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(startup, "_read_legacy_startup_command", lambda: '"C:/Old/App.exe"')
+    monkeypatch.setattr(startup, "_read_startup_command", lambda: '"C:/App/MyTime.exe"')
+    monkeypatch.setattr(startup, "_command", lambda: '"C:/App/MyTime.exe"')
+    deleted = []
+    monkeypatch.setattr(startup, "_delete_legacy_value", lambda: deleted.append(1))
+    calls = []
+    monkeypatch.setattr(startup, "set_startup", lambda enabled: calls.append(enabled))
+    startup.reconcile_startup()
+    assert deleted == [1] and calls == []  # current entry already valid -> no rewrite

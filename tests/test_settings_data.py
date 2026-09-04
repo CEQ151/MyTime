@@ -127,7 +127,7 @@ def test_import_backup_path_naming(tmp_path):
 def test_import_default_file_name_format():
     import re
 
-    assert re.fullmatch(r"LiquidMemoWidget-backup-\d{8}\.json", settings_ui.import_default_file_name())
+    assert re.fullmatch(r"MyTime-backup-\d{8}\.json", settings_ui.import_default_file_name())
 
 
 # ── allowCover switch wiring ───────────────────────────────────────────────────────────
@@ -227,5 +227,5 @@ def test_export_flow_writes_payload(qapp, tmp_path, monkeypatch):
     )
     sw._export_data()
     assert target.exists()
-    assert json.loads(target.read_text(encoding="utf-8"))["app"] == "liquid-memo-widget"
+    assert json.loads(target.read_text(encoding="utf-8"))["app"] == "mytime"  # lowercase since the MyTime rename
     assert "info" in boxes

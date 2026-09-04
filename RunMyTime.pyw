@@ -3,7 +3,7 @@ import sys
 
 
 sys.dont_write_bytecode = True
-APP_DIR = Path(__file__).resolve().parent / "LiquidMemoWidget"
+APP_DIR = Path(__file__).resolve().parent / "MyTime"
 sys.path.insert(0, str(APP_DIR))
 
 

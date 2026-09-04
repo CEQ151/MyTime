@@ -82,8 +82,8 @@ def test_release_from_payload_picks_setup_exe():
         "body": "notes",
         "html_url": "https://example/release",
         "assets": [
-            {"name": "LiquidMemoWidget-Portable-v2.3.4.zip", "browser_download_url": "z", "size": 1},
-            {"name": "LiquidMemoWidget-Setup-v2.3.4.exe", "browser_download_url": "s", "size": 99},
+            {"name": "MyTime-Portable-v2.3.4.zip", "browser_download_url": "z", "size": 1},
+            {"name": "MyTime-Setup-v2.3.4.exe", "browser_download_url": "s", "size": 99},
         ],
     }
     rel = updater._release_from_payload(payload)
@@ -98,8 +98,8 @@ def test_release_from_payload_captures_checksum_sidecar():
     payload = {
         "tag_name": "v2.3.4",
         "assets": [
-            {"name": "LiquidMemoWidget-Setup-v2.3.4.exe", "browser_download_url": "s", "size": 5},
-            {"name": "LiquidMemoWidget-Setup-v2.3.4.exe.sha256", "browser_download_url": "c", "size": 1},
+            {"name": "MyTime-Setup-v2.3.4.exe", "browser_download_url": "s", "size": 5},
+            {"name": "MyTime-Setup-v2.3.4.exe.sha256", "browser_download_url": "c", "size": 1},
         ],
     }
     rel = updater._release_from_payload(payload)
@@ -109,7 +109,7 @@ def test_release_from_payload_captures_checksum_sidecar():
 
 def test_parse_expected_sha256_accepts_sha256sum_and_bare_forms():
     digest = "a" * 64
-    assert updater._parse_expected_sha256(f"{digest}  LiquidMemoWidget-Setup.exe") == digest
+    assert updater._parse_expected_sha256(f"{digest}  MyTime-Setup.exe") == digest
     assert updater._parse_expected_sha256(digest.upper()) == digest  # normalized to lowercase
     assert updater._parse_expected_sha256("not-a-hash") == ""
     assert updater._parse_expected_sha256("") == ""
@@ -118,7 +118,7 @@ def test_parse_expected_sha256_accepts_sha256sum_and_bare_forms():
 def test_sha256_file_matches_hashlib(tmp_path):
     import hashlib
 
-    blob = b"liquid-memo-widget" * 4096
+    blob = b"MyTime" * 4096
     f = tmp_path / "blob.bin"
     f.write_bytes(blob)
     assert updater.sha256_file(f) == hashlib.sha256(blob).hexdigest()
@@ -161,7 +161,7 @@ def test_verify_installer_checksum_pass_fail_and_skip(tmp_path, monkeypatch):
 
 
 def test_is_portable_build_detects_marker(tmp_path, monkeypatch):
-    exe = tmp_path / "LiquidMemoWidget.exe"
+    exe = tmp_path / "MyTime.exe"
     exe.write_text("stub")
     monkeypatch.setattr(updater.sys, "executable", str(exe))
     assert updater.is_portable_build() is False
@@ -313,7 +313,7 @@ def test_local_changelog_section_missing_file_returns_empty(tmp_path, monkeypatc
 def test_download_installer_retries_transient_failures(tmp_path, monkeypatch):
     release = updater.ReleaseInfo(
         tag="v1.2.3", version="1.2.3", notes="", html_url="u",
-        installer_url="http://x/setup.exe", installer_name="LiquidMemoWidget-Setup-v1.2.3.exe",
+        installer_url="http://x/setup.exe", installer_name="MyTime-Setup-v1.2.3.exe",
         installer_size=0,
     )
     calls = {"n": 0}
@@ -336,7 +336,7 @@ def test_download_installer_retries_transient_failures(tmp_path, monkeypatch):
 def test_download_installer_raises_after_final_failure(tmp_path, monkeypatch):
     release = updater.ReleaseInfo(
         tag="v1.2.3", version="1.2.3", notes="", html_url="u",
-        installer_url="http://x/setup.exe", installer_name="LiquidMemoWidget-Setup-v1.2.3.exe",
+        installer_url="http://x/setup.exe", installer_name="MyTime-Setup-v1.2.3.exe",
         installer_size=0,
     )
     calls = {"n": 0}

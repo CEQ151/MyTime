@@ -1,7 +1,7 @@
-#define AppName "Liquid Memo Widget"
+#define AppName "MyTime"
 #define AppPublisher "CEQ151"
-#define AppURL "https://github.com/CEQ151/liquid-memo-widget"
-#define AppExeName "LiquidMemoWidget.exe"
+#define AppURL "https://github.com/CEQ151/MyTime"
+#define AppExeName "MyTime.exe"
 #define AppVersion GetEnv("APP_VERSION")
 
 #if AppVersion == ""
@@ -21,7 +21,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\THIRD_PARTY_NOTICES.md
 OutputDir=..\dist\installer
-OutputBaseFilename=LiquidMemoWidget-Setup-v{#AppVersion}
+OutputBaseFilename=MyTime-Setup-v{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -51,14 +51,14 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
-Source: "..\dist\LiquidMemoWidget\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\MyTime\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Registry]
 ; Auto-start is a user preference the app writes at runtime (startup.py), so the installer must
 ; NOT create or modify it at install time (ValueType: none = leave it alone). We only delete it
-; on uninstall so the HKCU\...\Run "LiquidMemoWidget" value isn't left orphaned, pointing at a
+; on uninstall so the HKCU\...\Run "MyTime" value isn't left orphaned, pointing at a
 ; now-removed exe.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "LiquidMemoWidget"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MyTime"; Flags: uninsdeletevalue
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
@@ -67,3 +67,14 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// Pre-rename installs auto-started via the HKCU\...\Run value "LiquidMemoWidget"; the app's
+// exe is now MyTime.exe, so that entry would point at a missing file on every login. The app
+// itself only manages the "MyTime" value, so delete the legacy one during install.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    RegDeleteValue(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows\CurrentVersion\Run', 'LiquidMemoWidget');
+end;

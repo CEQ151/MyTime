@@ -271,7 +271,7 @@ class ChangelogDialog(_ReleaseCardDialog):
         ink = getattr(app, "ink", None) if app is not None else None
         self.apply_ink_theme(ink.theme if ink is not None and ink.active else None)
         self.setWindowTitle("更新日志")
-        self.add_header("更新完成 🎉", f"桌面备忘已更新到 v{APP_VERSION}，本次更新内容：")
+        self.add_header("更新完成 🎉", f"MyTime 已更新到 v{APP_VERSION}，本次更新内容：")
         self.add_notes(notes, html)
         buttons = QHBoxLayout()
         buttons.addStretch()

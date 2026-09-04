@@ -181,7 +181,7 @@ class FloatingLauncherWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip("点击展开桌面备忘；拖动可调整位置；右键打开菜单")
+        self.setToolTip("点击展开MyTime；拖动可调整位置；右键打开菜单")
 
         self._alert_status = "none"
         self._ink_bubble: tuple[str, str, str] | None = None

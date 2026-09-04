@@ -76,7 +76,9 @@ if TYPE_CHECKING:
 # Exported payloads carry settings + subscribed calendars + todos + history only. Image
 # skins are deliberately excluded: their data is a list of files on disk, and a backup
 # that references files the target machine does not have would silently break rendering.
-EXPORT_APP_TAG = "liquid-memo-widget"
+EXPORT_APP_TAG = "mytime"
+# Backups exported before the MyTime rename carry "liquid-memo-widget"; still importable.
+LEGACY_EXPORT_APP_TAGS = {"liquid-memo-widget"}
 EXPORT_VERSION = 1
 CUSTOM_SKINS_NOTE = "图片皮肤不随备份导出；导入后请在设置中重新添加图片皮肤。"
 
@@ -101,7 +103,7 @@ def validate_import(data: Any) -> None:
     """Raise ValueError unless `data` is a payload produced by export_payload."""
     if not isinstance(data, dict):
         raise ValueError("不是有效的备份文件")
-    if data.get("app") != EXPORT_APP_TAG:
+    if data.get("app") != EXPORT_APP_TAG and data.get("app") not in LEGACY_EXPORT_APP_TAGS:
         raise ValueError("不是本应用导出的备份文件")
     if not isinstance(data.get("settings"), dict):
         raise ValueError("备份缺少设置数据")
@@ -117,7 +119,7 @@ def import_backup_path(state_path: "Path", stamp: str) -> "Path":
 
 
 def import_default_file_name() -> str:
-    return f"LiquidMemoWidget-backup-{datetime.now():%Y%m%d}.json"
+    return f"MyTime-backup-{datetime.now():%Y%m%d}.json"
 
 
 class LargeMenuComboBox(ComboBox):
@@ -275,7 +277,7 @@ class SettingsWindow(FramelessDragMixin, QDialog):
         self.complete.currentIndexChanged.connect(self._apply)
         self.position = self._combo_row("默认启动位置", "应用启动时窗口出现的位置。", {"右上角": "topRight", "右下角": "bottomRight", "左上角": "topLeft", "左下角": "bottomLeft", "上次位置": "last", "使用当前位置": "current"}, self.app.state.window.startPosition)
         self.position.currentIndexChanged.connect(self._apply)
-        self.startup = self._switch_row("开机自启动", "登录 Windows 后自动启动桌面备忘。", self._last_startup_checked)
+        self.startup = self._switch_row("开机自启动", "登录 Windows 后自动启动MyTime。", self._last_startup_checked)
         self.startup.checkedChanged.connect(lambda _checked: self._apply())
         self.window_mode = self._combo_row(
             "窗口显示模式",

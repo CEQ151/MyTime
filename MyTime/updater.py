@@ -123,7 +123,7 @@ def _fetch_atom_releases() -> list[ReleaseInfo]:
         if not tag:
             continue
         link = entry.find("a:link", ns)
-        installer_name = f"LiquidMemoWidget-Setup-{tag}.exe"
+        installer_name = f"MyTime-Setup-{tag}.exe"
         download_base = f"{GITHUB_URL}/releases/download/{tag}"
         releases.append(ReleaseInfo(
             tag=tag,
@@ -328,7 +328,7 @@ def download_installer(release: ReleaseInfo,
 
 
 def _update_log_path() -> Path:
-    return Path(tempfile.gettempdir()) / "LiquidMemoWidget-update.log"
+    return Path(tempfile.gettempdir()) / "MyTime-update.log"
 
 
 def _log(message: str) -> None:

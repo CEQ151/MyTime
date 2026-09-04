@@ -12,7 +12,7 @@ import recurring_ical_events
 
 from state_store import CalendarEvent
 
-_USER_AGENT = "DesktopMemo-Pro/1.0 (+calendar-subscription)"
+_USER_AGENT = "MyTime/1.0 (+calendar-subscription)"
 _TIMEOUT = 10
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB cap to avoid pathological feeds
 

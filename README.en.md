@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🪟 Liquid Memo Widget
+# 🪟 MyTime
 
 **A translucent desktop memo & todo widget for Windows 11**
 
@@ -72,8 +72,8 @@ events, and reminders on the desktop.
 ## 🚀 Run From Source
 
 ```powershell
-python -m pip install -r .\LiquidMemoWidget\requirements.txt
-pythonw .\RunLiquidMemoWidget.pyw    # pythonw = no console window
+python -m pip install -r .\MyTime\requirements.txt
+pythonw .\RunMyTime.pyw    # pythonw = no console window
 ```
 
 ---
@@ -84,7 +84,7 @@ pythonw .\RunLiquidMemoWidget.pyw    # pythonw = no console window
 .\Build.ps1
 ```
 
-The build output is generated under `dist\LiquidMemoWidget`.
+The build output is generated under `dist\MyTime`.
 
 ---
 
@@ -99,8 +99,8 @@ with the one you are packaging):
 
 This creates:
 
-- `dist\LiquidMemoWidget-Portable-v<version>.zip`
-- `dist\installer\LiquidMemoWidget-Setup-v<version>.exe`
+- `dist\MyTime-Portable-v<version>.zip`
+- `dist\installer\MyTime-Setup-v<version>.exe`
 
 Useful options:
 

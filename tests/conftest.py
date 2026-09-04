@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-APP_DIR = Path(__file__).resolve().parents[1] / "LiquidMemoWidget"
+APP_DIR = Path(__file__).resolve().parents[1] / "MyTime"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 

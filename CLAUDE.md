@@ -22,13 +22,13 @@ UI strings are Chinese. Code/identifiers are English.
 
 ```powershell
 # Run from source (preferred entry point — pythonw = no console window)
-python -m pip install -r .\LiquidMemoWidget\requirements.txt
-pythonw .\RunLiquidMemoWidget.pyw
+python -m pip install -r .\MyTime\requirements.txt
+pythonw .\RunMyTime.pyw
 
 # Headless regression suite (Qt uses the offscreen platform in tests/conftest.py)
 py -3.13 -m pytest .\tests -q
 
-# Build a PyInstaller bundle into dist\LiquidMemoWidget\
+# Build a PyInstaller bundle into dist\MyTime\
 .\Build.ps1
 
 # Package portable zip + Inno Setup installer (needs Inno Setup 6 on PATH or via -InnoSetupPath)
@@ -36,15 +36,15 @@ py -3.13 -m pytest .\tests -q
 .\Package.ps1 -Version 0.0.1 -SkipInstaller   # zip only
 ```
 
-**PyInstaller pitfall:** app sources under `LiquidMemoWidget/` ship via `--add-data` and are
+**PyInstaller pitfall:** app sources under `MyTime/` ship via `--add-data` and are
 imported only at runtime, so PyInstaller never analyzes their imports. Any new stdlib or
 third-party module imported there must also be added to `Build.ps1` as `--hidden-import`
 (this shipped a launch crash once: `xml.etree` was missing). Smoke-test
-`dist\LiquidMemoWidget\LiquidMemoWidget.exe` after changing imports.
+`dist\MyTime\MyTime.exe` after changing imports.
 
 The regression suite lives under `tests/`; there is no linter configured. Releases are produced by
 `.github/workflows/release.yml`, triggered by pushing a `v*` tag. **Before tagging a release:**
-bump `APP_VERSION` in `LiquidMemoWidget/version.py` and add a `## vX.Y.Z` section to
+bump `APP_VERSION` in `MyTime/version.py` and add a `## vX.Y.Z` section to
 `CHANGELOG.md` documenting the changes — the workflow extracts that section as the GitHub
 Release body (and fails without it); the in-app update dialog and post-update changelog
 render the same text.
@@ -52,7 +52,7 @@ render the same text.
 ## Architecture
 
 ### Module layout
-The Qt app lives under `LiquidMemoWidget/` and uses **flat imports** (bare module names,
+The Qt app lives under `MyTime/` and uses **flat imports** (bare module names,
 resolved via a `sys.path` insert in the entry point), so modules reference each other
 directly (`from ui_common import ...`). `from __future__ import annotations` everywhere
 keeps type hints lazy, so windows/managers reference each other by duck-typed `self.app`
@@ -99,7 +99,7 @@ without import cycles. Key files:
   *third-party* imports need a `--hidden-import`).
 
 ### Two-layer rendering model
-`MemoWindow` (in `LiquidMemoWidget/app.py`) is a plain translucent `QWidget`
+`MemoWindow` (in `MyTime/app.py`) is a plain translucent `QWidget`
 (`WA_TranslucentBackground`, frameless `Qt.Tool`, topmost). The window's surface is supplied
 by the active skin, not by Qt painting:
 - **`AcrylicSkin` (default):** `WindowsWindowEffect.setAcrylicEffect` applies a DWM acrylic frost
@@ -218,11 +218,11 @@ after verifying the stuck PID still belongs to that exact executable—force-ter
 worker prevents process exit; it then runs the Inno installer silently and relaunches.
 `pendingUpdateVersion` persists across the restart so a failed install surfaces a notice next
 launch. The helper records checksum, exit, installer-return-code, and relaunch events in
-`%TEMP%\LiquidMemoWidget-update.log`.
+`%TEMP%\MyTime-update.log`.
 
 **Release-asset contract** (produced by `release.yml` / `Package.ps1`, consumed by `updater.py`):
-- `LiquidMemoWidget-Setup-vX.Y.Z.exe` + `.sha256` sidecar (`<hash>  <name>`, sha256sum layout)
-- `LiquidMemoWidget-Portable-vX.Y.Z.zip` + `.sha256` sidecar
+- `MyTime-Setup-vX.Y.Z.exe` + `.sha256` sidecar (`<hash>  <name>`, sha256sum layout)
+- `MyTime-Portable-vX.Y.Z.zip` + `.sha256` sidecar
 - The installer is verified against its sidecar before the silent install (mismatch aborts;
   a release with no sidecar — older versions — skips verification rather than fail-closed).
 - The portable zip carries a `portable.flag` marker (never in the installer). `is_portable_build()`
@@ -233,12 +233,12 @@ The silent startup check is throttled (`Settings.lastUpdateCheckAt`, every 12h),
 `Settings.autoCheckUpdates` (a 关于-section toggle), and won't re-prompt for a version the user
 dismissed (`Settings.lastDismissedUpdateVersion`); a manual "检查更新" bypasses all of these.
 
-### GPU fluid ink-wash (`LiquidMemoWidget/experimental_fluid/`)
+### GPU fluid ink-wash (`MyTime/experimental_fluid/`)
 An OpenGL 3.3 Core / `QOpenGLWidget` + PyOpenGL fluid solver (curl → vorticity → divergence →
 pressure Jacobi → gradient-subtract → advection → splat, GLSL in `shaders/`). The algorithm was
 ported from the WebGL reference (`WebGL-Fluid-Simulation/`, kept locally but **gitignored** — it's
 a port source, not needed at runtime; see `THIRD_PARTY_NOTICES.md`). Run the standalone tuner demo:
-`python -m LiquidMemoWidget.experimental_fluid.fluid_demo_window`.
+`python -m MyTime.experimental_fluid.fluid_demo_window`.
 
 This **ships**: `ink_background.make_ink_background(parent, theme_key)` returns `FluidGLWidget`
 (themed via `fluid_config.FluidConfig`) as the 灵动水墨 skin's background when OpenGL is usable, and
@@ -247,7 +247,7 @@ lifecycle (`start`/`stop`/`setActive`/`cleanup`/`setGeometry`/`set_theme`); `Mem
 whichever it gets through `InkSkin`.
 - **PyOpenGL is a real dependency** — present in `requirements.txt` and bundled by `Build.ps1`
   (`--collect-all OpenGL`, the `OpenGL.platform.win32` / `PySide6.QtOpenGL*` hidden-imports). The
-  whole `experimental_fluid/` (incl. `shaders/`) ships via the existing `--add-data LiquidMemoWidget`.
+  whole `experimental_fluid/` (incl. `shaders/`) ships via the existing `--add-data MyTime`.
 - `set_theme(theme_key)` recolours in place (GL uploads the palette uniforms each frame; the swirl
   re-bakes its colour layers), so an ink-theme switch never rebuilds the GL context.
 - `fluid_demo_window.py` / `inkwash_tuner.html` are dev-only tools (committed, not used at runtime).

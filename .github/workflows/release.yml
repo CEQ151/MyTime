@@ -41,7 +41,7 @@ jobs:
       - name: Stamp app version
         shell: pwsh
         run: |
-          $versionFile = "LiquidMemoWidget\version.py"
+          $versionFile = "MyTime\version.py"
           (Get-Content $versionFile) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$env:APP_VERSION`"" |
             Set-Content $versionFile
           Get-Content $versionFile | Select-String "APP_VERSION"
@@ -51,13 +51,13 @@ jobs:
         with:
           python-version: "3.13"
           cache: "pip"
-          cache-dependency-path: "LiquidMemoWidget/requirements.txt"
+          cache-dependency-path: "MyTime/requirements.txt"
 
       - name: Install Python dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r .\LiquidMemoWidget\requirements.txt
+          python -m pip install -r .\MyTime\requirements.txt
           python -m pip install pyinstaller
 
       # Regression gate: import/construction smoke + updater unit tests must pass
@@ -82,20 +82,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\dist\installer | Out-Null
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\LiquidMemoWidget.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\MyTime.iss
 
       - name: Package portable zip
         shell: pwsh
         run: |
-          $zipPath = ".\dist\LiquidMemoWidget-Portable-${env:RELEASE_VERSION}.zip"
+          $zipPath = ".\dist\MyTime-Portable-${env:RELEASE_VERSION}.zip"
           if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
           }
           # Marker so the runtime recognizes the portable build (manual update, not silent
           # install). The installer was already built above, so it never contains this file.
-          "portable" | Set-Content -LiteralPath .\dist\LiquidMemoWidget\portable.flag -Encoding ascii -NoNewline
-          Compress-Archive -Path .\dist\LiquidMemoWidget\* -DestinationPath $zipPath -CompressionLevel Optimal
-          Remove-Item .\dist\LiquidMemoWidget\portable.flag -Force
+          "portable" | Set-Content -LiteralPath .\dist\MyTime\portable.flag -Encoding ascii -NoNewline
+          Compress-Archive -Path .\dist\MyTime\* -DestinationPath $zipPath -CompressionLevel Optimal
+          Remove-Item .\dist\MyTime\portable.flag -Force
 
       - name: Compute SHA256 checksums
         shell: pwsh
@@ -106,8 +106,8 @@ jobs:
             $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
             "$hash  $(Split-Path -Leaf $path)" | Set-Content -LiteralPath "$path.sha256" -Encoding ascii -NoNewline
           }
-          Write-Sidecar ".\dist\installer\LiquidMemoWidget-Setup-${env:RELEASE_VERSION}.exe"
-          Write-Sidecar ".\dist\LiquidMemoWidget-Portable-${env:RELEASE_VERSION}.zip"
+          Write-Sidecar ".\dist\installer\MyTime-Setup-${env:RELEASE_VERSION}.exe"
+          Write-Sidecar ".\dist\MyTime-Portable-${env:RELEASE_VERSION}.zip"
 
       - name: Verify artifacts
         shell: pwsh
@@ -141,13 +141,13 @@ jobs:
             throw "The '## v$env:APP_VERSION' section in CHANGELOG.md is empty. Document the changes before tagging."
           }
           $body = @()
-          $body += "## Liquid Memo Widget $env:RELEASE_VERSION"
+          $body += "## MyTime $env:RELEASE_VERSION"
           $body += ""
           $body += $section
           $body += ""
           $body += "### 下载"
-          $body += "- ``LiquidMemoWidget-Setup-$env:RELEASE_VERSION.exe``：Windows 安装包（支持应用内自动更新）"
-          $body += "- ``LiquidMemoWidget-Portable-$env:RELEASE_VERSION.zip``：免安装便携版"
+          $body += "- ``MyTime-Setup-$env:RELEASE_VERSION.exe``：Windows 安装包（支持应用内自动更新）"
+          $body += "- ``MyTime-Portable-$env:RELEASE_VERSION.zip``：免安装便携版"
           $body -join "`n" | Set-Content release_body.md -Encoding utf8
           Get-Content release_body.md
 
@@ -155,12 +155,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
-          name: Liquid Memo Widget ${{ env.RELEASE_VERSION }}
+          name: MyTime ${{ env.RELEASE_VERSION }}
           body_path: release_body.md
           # Appends an auto-generated "What's Changed" commit list after the body.
           generate_release_notes: true
           files: |
-            dist/installer/LiquidMemoWidget-Setup-${{ env.RELEASE_VERSION }}.exe
-            dist/installer/LiquidMemoWidget-Setup-${{ env.RELEASE_VERSION }}.exe.sha256
-            dist/LiquidMemoWidget-Portable-${{ env.RELEASE_VERSION }}.zip
-            dist/LiquidMemoWidget-Portable-${{ env.RELEASE_VERSION }}.zip.sha256
+            dist/installer/MyTime-Setup-${{ env.RELEASE_VERSION }}.exe
+            dist/installer/MyTime-Setup-${{ env.RELEASE_VERSION }}.exe.sha256
+            dist/MyTime-Portable-${{ env.RELEASE_VERSION }}.zip
+            dist/MyTime-Portable-${{ env.RELEASE_VERSION }}.zip.sha256

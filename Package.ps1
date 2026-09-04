@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$appName = "LiquidMemoWidget"
+$appName = "MyTime"
 $appDir = Join-Path $root "dist\$appName"
 $installerDir = Join-Path $root "dist\installer"
 
@@ -92,7 +92,7 @@ function Write-Sha256Sidecar {
 $appVersion = Resolve-AppVersion -RequestedVersion $Version
 $env:APP_VERSION = $appVersion
 
-Write-Host "Packaging Liquid Memo Widget v$appVersion"
+Write-Host "Packaging MyTime v$appVersion"
 Write-Host "Workspace: $root"
 
 if (-not $SkipBuild) {
@@ -129,7 +129,7 @@ if (-not $SkipInstaller) {
   $iscc = Resolve-IsccPath -RequestedPath $InnoSetupPath
   Write-Host ""
   Write-Host "==> Creating installer with Inno Setup"
-  & $iscc (Join-Path $root "installer\LiquidMemoWidget.iss")
+  & $iscc (Join-Path $root "installer\MyTime.iss")
 
   if (-not (Test-Path -LiteralPath $installerPath)) {
     throw "Installer output was not found: $installerPath"

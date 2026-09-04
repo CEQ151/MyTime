@@ -1,4 +1,4 @@
-# LiquidMemoWidget
+# MyTime
 
 Windows 11 液态玻璃桌面待办小组件。
 
@@ -11,7 +11,7 @@ python -m pip install PySide6-Fluent-Widgets
 ```
 
 ```powershell
-pythonw ..\RunLiquidMemoWidget.pyw
+pythonw ..\RunMyTime.pyw
 ```
 
 也可以在开发时使用：

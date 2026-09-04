@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🪟 MyTime · MyTime小组件
+# 🪟 MyTime
 
 **Windows 11 上的半透明质感桌面待办小组件**
 
